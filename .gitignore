@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Spyder IDE specific files
+.spyproject/
+.spyderproject/
+
+# Package builds and virtual environments
+build/
+dist/
+*.egg-info/
+.venv/
+env/

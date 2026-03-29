@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Physics-Based SMPL-X Modelling (PBSM)
+
+Create MCJF file from SMPLX model.
+"""
+
+# Standard Imports
+import os
+import shutil
+
+# Third-Party Imports
+import trimesh
+import smplx
+
+# Package-Specific Imports
+from pbsm.mujoco_smplx import utils
+from pbsm.mujoco_smplx import plot
+
+
+def smplx2mjcf(model: smplx.SMPLX,
+               plotting: bool = False,
+               save: bool = True,
+               stl_folder: str = "STL",
+               density_kg_per_m3: float = 1000.0,
+               subdivision_iterations: int = 2,
+               output_file: str = "smplx_full_body.xml") -> None:
+    """
+    Converts an SMPL-X parametric body model into a MuJoCo compatible MJCF format.
+
+    This function extracts the vertices, faces, joints, and Linear Blend Skinning (LBS) 
+    weights from a provided SMPL-X model. It optionally subdivides the mesh for higher 
+    resolution, enforces strict bilateral symmetry, segments the body parts, generates 
+    convex hulls for physics collision, and writes the complete kinematic tree to an XML file.
+
+    Parameters
+    ----------
+    model : smplx.SMPLX
+        The instantiated SMPL-X model to convert.
+    plotting : bool, optional
+        If True, displays interactive Plotly 3D visualisations of the mesh, 
+        vertices, segmented parts, and convex hulls during processing, by default False.
+    save : bool, optional
+        If True, saves the generated STL collision meshes and the final MJCF XML file 
+        to the local disk, by default True.
+    stl_folder : str, optional
+        The name of the directory where the generated STL files for each body segment 
+        will be saved, by default "STL".
+    density_kg_per_m3 : float, optional
+        The density applied to the generated convex hulls for physics calculations, 
+        by default 1000.0.
+    subdivision_iterations : int, optional
+        The number of times to subdivide the mesh and interpolate weights for a 
+        smoother surface. Set to 0 to skip subdivision, by default 2.
+    output_file : str, optional
+        The filename for the generated MuJoCo XML (MJCF) file, by default "smplx_full_body.xml".
+
+    Returns
+    -------
+    None
+    """
+
+    stl_folder = os.path.join(os.getcwd(), stl_folder)
+    
+    segment_joints = ['jaw','head','neck','spine3','spine2','spine1','pelvis','right_collar','right_shoulder',
+                      'right_elbow','right_wrist','right_index1','right_index2','right_index3','right_middle1',
+                      'right_middle2','right_middle3','right_pinky1','right_pinky2','right_pinky3','right_ring1',
+                      'right_ring2','right_ring3','right_thumb1','right_thumb2','right_thumb3','left_collar',
+                      'left_shoulder','left_elbow','left_wrist','left_index1','left_index2','left_index3',
+                      'left_middle1','left_middle2','left_middle3','left_pinky1','left_pinky2','left_pinky3',
+                      'left_ring1','left_ring2','left_ring3','left_thumb1','left_thumb2','left_thumb3','left_hip',
+                      'left_knee','left_ankle','left_foot','right_hip','right_knee','right_ankle','right_foot']
+    
+    names, network = utils.make_name_and_network()
+    
+    if plotting:
+        print("Plotting vertices and mesh")
+        plot.plot_mesh(model)
+        plot.plot_vertices(model)
+    
+    # Get Base Data
+    output = model(return_verts=True)
+    base_vertices = output.vertices.detach().cpu().numpy().squeeze()
+    base_faces = model.faces
+    base_weights = model.lbs_weights.detach().cpu().numpy()
+    joints = output.joints.detach().cpu().numpy().squeeze()
+    
+    
+    # Optional Upscale
+    if subdivision_iterations > 0:
+        print(f"Subdividing mesh {subdivision_iterations} time(s)")
+        up_verts, up_faces, up_weights = utils.subdivide_with_weights(
+            base_vertices, base_faces, base_weights, iterations=subdivision_iterations
+        )
+    else:
+        up_verts, up_faces, up_weights = base_vertices, base_faces, base_weights
+    
+    # Enforce Symmetry
+    print("Enforcing bilateral symmetry")
+    v_mirror = utils.find_vertex_symmetry(up_verts)
+    j_mirror = utils.get_joint_symmetry_map(names)
+    sym_weights = utils.symmetrize_weights(up_weights, v_mirror, j_mirror)
+    
+    # Segment using Symmetric Weights
+    segmented_parts = utils.segment_by_provided_weights(
+        names=names, 
+        segment_joints=segment_joints, 
+        pointcloud=up_verts, 
+        lbs_weights=sym_weights # Use the symmetrized version!
+    )
+    
+    if plotting:
+        print("Plotting segments")
+        plot.plot_segments(segmented_parts, up_verts)
+    
+    if save:
+        if os.path.exists(stl_folder):
+            shutil.rmtree(stl_folder)
+        os.mkdir(stl_folder)
+    
+    # Generate Convex Hulls
+    print("Generating convex hulls")
+    if save:
+        print(f"Saving .stl files to {stl_folder}")
+        
+    hulls_dict = {}
+    for key in segmented_parts.keys():
+        collision_mesh = trimesh.convex.convex_hull(segmented_parts[key])
+        collision_mesh.density = density_kg_per_m3
+        hulls_dict[key] = collision_mesh
+        
+        if save:
+            collision_mesh.export(os.path.join(stl_folder, f"{key}.stl"))
+    
+    if plotting:
+        print("Plotting convex hulls")
+        plot.plot_collision_hulls(hulls_dict)
+    
+    # MuJoCo File
+    if save:
+        print("Building MuJoCo Kinematic Tree and Skin")
+        utils.generate_full_body_mjcf(
+                network=network,
+                names=names,
+                joints=joints,
+                segment_joints=segment_joints,
+                pointcloud=up_verts,
+                faces=up_faces,
+                lbs_weights=sym_weights,
+                stl_folder=stl_folder,
+                output_file=output_file)

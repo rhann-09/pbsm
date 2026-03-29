@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pbsm"
+version = "0.1.0"
+authors = [
+  {name="Reuben Hann"},
+]
+description = "Physics-Based SMPL-X Modelling"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "networkx>=3.6.1",
+    "numpy>=2.4.4",
+    "plotly>=5.24.1",
+    "scipy>=1.17.1",
+    "smplx>=0.1.28",
+    "torch>=2.10.0",
+    "trimesh>=4.11.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "sphinx"]
