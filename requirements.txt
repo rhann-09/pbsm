@@ -1,7 +1,0 @@
-networkx==3.6.1
-numpy==2.4.4
-plotly==5.24.1
-scipy==1.17.1
-smplx==0.1.28
-torch==2.10.0+cu130
-trimesh==4.11.1
