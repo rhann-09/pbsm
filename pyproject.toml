@@ -19,6 +19,7 @@ dependencies = [
     "smplx>=0.1.28",
     "torch>=2.10.0",
     "trimesh>=4.11.1",
+    "mujoco>=3.1.0",
 ]
 
 [project.optional-dependencies]
