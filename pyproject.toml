@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "pbsm"
 version = "0.1.0"
 authors = [
-  {name="Reuben Hann"},
+    { name="Reuben Hann", email="reubenhann@gmail.com" },
 ]
 description = "Physics-Based SMPL-X Modelling"
 readme = "README.md"
