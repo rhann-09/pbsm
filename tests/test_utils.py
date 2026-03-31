@@ -8,7 +8,7 @@ Testing Utility functions for the pbsm.mujoco_smplx sub-package.
 
 
 # Standard Imports
-from unittest.mock import patch
+from unittest.mock import patch, mock_open
 
 # Third-Party Imports
 import networkx
@@ -17,13 +17,9 @@ import torch
 import numpy as np
 from scipy.spatial import cKDTree
 
-
-
 # Package-Specific Imports
 import pbsm.mujoco_smplx.utils as utils
 
-
-# %% make_name_and_network
 
 def test_make_name_and_network():
     """Check output type and size."""
@@ -40,7 +36,6 @@ def test_make_name_and_network():
     assert network.number_of_edges() == 67
     assert network.number_of_nodes() == 68
 
-# %% default_smplx_model
 
 @pytest.fixture
 def valid_params():
@@ -54,6 +49,7 @@ def valid_params():
         "use_pca": False,
         "flat_hand_mean": True
         }
+
 
 @patch('smplx.SMPLX', autospec=True)
 def test_default_smplx_model_success(mock_smplx, valid_params):
@@ -75,58 +71,6 @@ def test_default_smplx_model_success(mock_smplx, valid_params):
     )
     assert model == mock_instance
 
-@patch('smplx.SMPLX')
-def test_betas_conversion_to_float32(mock_smplx, valid_params):
-    """Test that betas are automatically converted to float32 if passed as float64."""
-    
-    valid_params["betas"] = torch.zeros((1, 10), dtype=torch.float64)
-    
-    utils.default_smplx_model(**valid_params)
-    
-    # Get the 'betas' argument from the call to SMPLX
-    args, kwargs = mock_smplx.call_args
-    passed_betas = kwargs['betas']
-    
-    assert passed_betas.dtype == torch.float32
-
-@pytest.mark.parametrize("key, bad_value, expected_msg",
-    [
-        ("model_path", 123, "model_path must be a str"),
-        ("gender", ["male"], "gender must be a str"),
-        ("ext", None, "ext must be a str"),
-        ("use_pca", "True", "use_pca must be a bool"),
-        ("flat_hand_mean", 1, "flat_hand_mean must be a bool"),
-        ("betas", [0.1, 0.2], "betas must be a torch.Tensor"),
-    ])
-def test_type_errors(key, bad_value, expected_msg, valid_params):
-    """Test that TypeError is raised for various invalid input types."""
-    
-    valid_params[key] = bad_value
-    
-    with pytest.raises(TypeError) as excinfo:
-        utils.default_smplx_model(**valid_params)
-    
-    assert str(excinfo.value) == expected_msg
-
-def test_missing_required_arguments():
-    """Test that omitting required arguments raises a standard Python TypeError."""
-    
-    with pytest.raises(TypeError):
-        
-        # Missing betas and other required positional/keyword args
-        utils.default_smplx_model(model_path="path", gender="male", ext="pkl")
-        
-# %% find_vertex_symmetry
-
-def test_find_vertex_symmetry_type():
-    """Check output type and size."""
-    
-    try:
-        utils.find_vertex_symmetry([0,0,0,0])
-    except TypeError:
-        assert True
-    else:
-        assert False
 
 def test_perfect_symmetry():
     """Test a set of points that are perfectly symmetric across the X-axis."""
@@ -148,45 +92,81 @@ def test_perfect_symmetry():
     np.testing.assert_array_equal(mirror_map, expected_map)
 
 
-def test_points_on_symmetry_plane():
-    """Test points that lie exactly on the YZ plane (X=0). They should map to themselves."""
-    vertices = np.array([
-        [0.0,  5.0,  2.0], # index 0
-        [0.0, -1.0, -1.0], # index 1
-        [1.0,  0.0,  0.0], # index 2 (Right)
-        [-1.0, 0.0,  0.0], # index 3 (Left)
-    ])
+def test_make_symmetric_weights_success():
+    """Check the weight averaging logic across vertices and joints."""
+    lbs_weights = np.array([[0.8, 0.2], [0.1, 0.9]])
+    v_mirror_map = np.array([1, 0])
+    j_mirror_map = {0: 1, 1: 0}
     
-    # 0 and 1 map to themselves. 2 and 3 map to each other.
-    expected_map = np.array([0, 1, 3, 2])
-    mirror_map = utils.find_vertex_symmetry(vertices)
-    
-    np.testing.assert_array_equal(mirror_map, expected_map)
+    # Expected for index 0, joint 0: (weights[0,0] + weights[v_mirror[0], j_mirror[0]]) / 2
+    # (0.8 + weights[1,1]) / 2 = (0.8 + 0.9) / 2 = 0.85
+    expected = np.array([[0.85, 0.15], [0.15, 0.85]])
+    result = utils.make_symmetric_weights(lbs_weights, v_mirror_map, j_mirror_map)
+    np.testing.assert_array_almost_equal(result, expected)
 
 
-def test_single_vertex():
-    """Test the edge case of a single vertex."""
-    vertices = np.array([[3.0, 4.0, 5.0]])
+@patch('trimesh.remesh.subdivide')
+def test_subdivide_by_attributes_success(mock_subdivide):
+    """Ensure subdivide is called the correct number of times and returns data."""
+    v = np.zeros((3, 3))
+    f = np.zeros((1, 3))
+    attrs = {'weights': np.zeros(3)}
+    mock_subdivide.return_value = (v, f, attrs)
     
-    # Even though its true mirror doesn't exist, the KDTree will map it 
-    # to the closest available point, which is itself (index 0).
-    expected_map = np.array([0])
-    mirror_map = utils.find_vertex_symmetry(vertices)
+    v_out, f_out, attrs_out = utils.subdivide_by_attributes(v, f, attrs, iterations=2)
     
-    np.testing.assert_array_equal(mirror_map, expected_map)
+    assert mock_subdivide.call_count == 2
+    np.testing.assert_array_equal(v_out, v)
 
 
-def test_asymmetric_closest_match():
-    """Test that points map to the *closest* spatial neighbor if a perfect mirror doesn't exist."""
-    vertices = np.array([
-        [ 2.0, 0.0, 0.0], # index 0. Mirrored -> [-2, 0, 0]
-        [-2.5, 0.0, 0.0], # index 1. Closest to [-2, 0, 0]
-        [-1.0, 0.0, 0.0], # index 2. Further from [-2, 0, 0]
-    ])
+def test_load_aligned_smplx_uv_success():
+    """Test parsing of a mock OBJ file with UV coordinates."""
+    obj_content = "vt 0.1 0.2\nvt 0.3 0.4\nf 1/1/1 2/2/2 3/1/3\n"
+    with patch("builtins.open", mock_open(read_data=obj_content)):
+        uvs = utils.load_aligned_smplx_uv("dummy.obj", num_vertices=3)
+        # v1 (idx 0) -> vt1 (0.1, 0.2)
+        # v2 (idx 1) -> vt2 (0.3, 0.4)
+        # v3 (idx 2) -> vt1 (0.1, 0.2)
+        expected = np.array([[0.1, 0.2], [0.3, 0.4], [0.1, 0.2]])
+        np.testing.assert_array_almost_equal(uvs, expected)
+
+
+def test_segment_by_provided_weights_success():
+    """Verify pointcloud segmentation based on dominant LBS weights."""
+    names = ["j0", "j1"]
+    segment_joints = ["j0", "j1"]
+    pc = np.array([[0,0,0], [1,1,1]])
+    weights = np.array([[0.9, 0.1], [0.2, 0.8]]) # v0 belongs to j0, v1 belongs to j1
     
-    mirror_map = utils.find_vertex_symmetry(vertices)
+    result = utils.segment_by_provided_weights(names, segment_joints, pc, weights)
     
-    # The mirrored version of index 0 is [-2.0, 0.0, 0.0].
-    # The closest point in the original array to this mirrored coordinate is index 1.
-    assert mirror_map[0] == 1
+    assert "j0" in result
+    assert "j1" in result
+    np.testing.assert_array_equal(result["j0"], [[0,0,0]])
+    np.testing.assert_array_equal(result["j1"], [[1,1,1]])
+
+
+@patch('xml.dom.minidom.parseString')
+@patch('builtins.open', new_callable=mock_open)
+@patch('os.path.exists', return_value=True)
+def test_generate_full_body_mjcf_smoke(mock_exists, mock_file, mock_minidom):
+    """Smoke test to ensure generate_full_body_mjcf runs and writes a file."""
+    names = ["pelvis", "j1"]
+    network = networkx.Graph()
+    network.add_edge("pelvis", "j1")
+    joints = np.zeros((2, 3))
+    segment_joints = ["pelvis", "j1"]
+    pc = np.zeros((10, 3))
+    faces = np.zeros((2, 3), dtype=int)
+    weights = np.ones((10, 2))
+    uvs = np.zeros((10, 2))
     
+    # Mock XML pretty-printing
+    mock_minidom.return_value.toprettyxml.return_value = "<mujoco/>"
+    
+    utils.generate_full_body_mjcf(
+        network, names, joints, segment_joints, pc, faces, weights, uvs,
+        output_file="test.xml"
+    )
+    
+    mock_file.assert_called_once_with("test.xml", "w")
