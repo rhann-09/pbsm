@@ -262,6 +262,9 @@ def get_joint_symmetry_map(names: List[str]) -> Dict[int, int]:
     Dict[int, int]
         A dictionary mapping the integer index of a joint to the integer index of its symmetric counterpart.
     """
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise TypeError("names must be a list of strings")
+
     joint_map = {}
     
     for i, name in enumerate(names):
@@ -304,7 +307,13 @@ def make_symmetric_weights(lbs_weights: np.ndarray,
     np.ndarray
         A (N, J) array of symmetrized LBS weights.
     """    
-    
+    if not isinstance(lbs_weights, np.ndarray):
+        raise TypeError("lbs_weights must be a numpy.ndarray")
+    if not isinstance(v_mirror_map, np.ndarray):
+        raise TypeError("v_mirror_map must be a numpy.ndarray")
+    if not isinstance(j_mirror_map, dict):
+        raise TypeError("j_mirror_map must be a dictionary")
+
     sym_weights = np.zeros_like(lbs_weights)
     
     for i in range(len(lbs_weights)):
@@ -328,7 +337,7 @@ def subdivide_by_attributes(vertices: np.ndarray,
                             faces: np.ndarray, 
                             attributes_dict: dict, 
                             iterations: int = 1) -> Tuple[np.ndarray, dict]:
-"""
+    """
     Subdivides the mesh while interpolating any vertex attributes.
 
     Parameters
@@ -352,6 +361,15 @@ def subdivide_by_attributes(vertices: np.ndarray,
         Upsampled attributes.
 
     """
+    if not isinstance(vertices, np.ndarray):
+        raise TypeError("vertices must be a numpy.ndarray")
+    if not isinstance(faces, np.ndarray):
+        raise TypeError("faces must be a numpy.ndarray")
+    if not isinstance(attributes_dict, dict):
+        raise TypeError("attributes_dict must be a dict")
+    if not isinstance(iterations, int):
+        raise TypeError("iterations must be an integer")
+
     current_v = vertices.copy()
     current_f = faces.copy()
     current_attrs = attributes_dict.copy()
@@ -385,6 +403,11 @@ def load_aligned_smplx_uv(obj_path: str, num_vertices: int = 10475) -> np.ndarra
         Mapped uv coordinates.
 
     """
+    if not isinstance(obj_path, str):
+        raise TypeError("obj_path must be a str")
+    if not isinstance(num_vertices, int):
+        raise TypeError("num_vertices must be an int")
+
     vts = []
     uv_coords = np.zeros((num_vertices, 2))
     
@@ -442,6 +465,15 @@ def segment_by_provided_weights(names: List[str],
     Dict[str, np.ndarray]
         A dictionary mapping joint names to their corresponding (V, 3) vertex arrays.
     """
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise TypeError("names must be a list of strings")
+    if not isinstance(segment_joints, list) or not all(isinstance(j, str) for j in segment_joints):
+        raise TypeError("segment_joints must be a list of strings")
+    if not isinstance(pointcloud, np.ndarray):
+        raise TypeError("pointcloud must be a numpy.ndarray")
+    if not isinstance(lbs_weights, np.ndarray):
+        raise TypeError("lbs_weights must be a numpy.ndarray")
+
     # For every vertex, find the index of the joint that influences it the most
     dominant_joint_indices = np.argmax(lbs_weights, axis=1)
 
@@ -470,7 +502,7 @@ def generate_full_body_mjcf(network: nx.Graph,
                             output_file: str = "smplx_full_body.xml",
                             stiffness: float = 0.1,
                             damping: float = 0.1) -> None:
-"""
+    """
     Generates a complete MuJoCo XML (MJCF) file for the segmented SMPL-X physics body.
 
     Builds the kinematic tree, handles skin attachment, assigns collision meshes 
@@ -509,6 +541,32 @@ def generate_full_body_mjcf(network: nx.Graph,
     -------
     None
     """
+    if not isinstance(network, nx.Graph):
+        raise TypeError("network must be a networkx.Graph")
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise TypeError("names must be a list of strings")
+    if not isinstance(joints, np.ndarray):
+        raise TypeError("joints must be a numpy.ndarray")
+    if not isinstance(segment_joints, list) or not all(isinstance(j, str) for j in segment_joints):
+        raise TypeError("segment_joints must be a list of strings")
+    if not isinstance(pointcloud, np.ndarray):
+        raise TypeError("pointcloud must be a numpy.ndarray")
+    if not isinstance(faces, np.ndarray):
+        raise TypeError("faces must be a numpy.ndarray")
+    if not isinstance(lbs_weights, np.ndarray):
+        raise TypeError("lbs_weights must be a numpy.ndarray")
+    if uv_coords is not None and not isinstance(uv_coords, np.ndarray):
+        raise TypeError("uv_coords must be a numpy.ndarray or None")
+    if texture_file is not None and not isinstance(texture_file, str):
+        raise TypeError("texture_file must be a string or None")
+    if not isinstance(stl_folder, str):
+        raise TypeError("stl_folder must be a string")
+    if not isinstance(output_file, str):
+        raise TypeError("output_file must be a string")
+    if not isinstance(stiffness, (float, int)):
+        raise TypeError("stiffness must be a float or int")
+    if not isinstance(damping, (float, int)):
+        raise TypeError("damping must be a float or int")
 
     mujoco = ET.Element("mujoco", model="smplx_physics_body")
     
