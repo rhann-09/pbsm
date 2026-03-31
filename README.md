@@ -5,7 +5,13 @@
 
 * Currently provides a tool to convert SMPL-X models into MuJoCo-compatible MJCF formats consisting of segmented convex-hull collision meshes and linear-blended skinning of the SMPLX-model mesh.
 
-Example Usage:
+
+## Get the SMPL-X Models
+
+To obtain the SMPL-X Models go to the SMPL-X website downloads section: https://smpl-x.is.tue.mpg.de/
+
+## Example Usage
+
 ```python
 
 import sys

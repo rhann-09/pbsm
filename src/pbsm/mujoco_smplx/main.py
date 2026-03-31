@@ -13,6 +13,7 @@ import shutil
 # Third-Party Imports
 import trimesh
 import smplx
+import numpy as np
 
 # Package-Specific Imports
 from pbsm.mujoco_smplx import utils
@@ -25,7 +26,11 @@ def smplx2mjcf(model: smplx.SMPLX,
                stl_folder: str = "STL",
                density_kg_per_m3: float = 1000.0,
                subdivision_iterations: int = 2,
-               output_file: str = "smplx_full_body.xml") -> None:
+               obj_path: str = None,
+               num_vertices: int = 10475,
+               texture_file: str = "smplx_texture.png",
+               output_file: str = "smplx_full_body.xml",) -> None:
+
     """
     Converts an SMPL-X parametric body model into a MuJoCo compatible MJCF format.
 
@@ -53,6 +58,10 @@ def smplx2mjcf(model: smplx.SMPLX,
     subdivision_iterations : int, optional
         The number of times to subdivide the mesh and interpolate weights for a 
         smoother surface. Set to 0 to skip subdivision, by default 2.
+    num_vertices : int
+        The number of vertices, by default 10475.
+    texture_file : str
+        Path to texture .png file, by default "smplx_texture.png".
     output_file : str, optional
         The filename for the generated MuJoCo XML (MJCF) file, by default "smplx_full_body.xml".
 
@@ -61,6 +70,12 @@ def smplx2mjcf(model: smplx.SMPLX,
     None
     """
 
+    if isinstance(obj_path, str):
+        uv_coords = utils.load_aligned_smplx_uv(obj_path, num_vertices)
+        uv_coords[:, 1] = 1.0 - uv_coords[:, 1]
+    else:
+        uv_coords = None
+    
     stl_folder = os.path.join(os.getcwd(), stl_folder)
     
     segment_joints = ['jaw','head','neck','spine3','spine2','spine1','pelvis','right_collar','right_shoulder',
@@ -86,21 +101,29 @@ def smplx2mjcf(model: smplx.SMPLX,
     base_weights = model.lbs_weights.detach().cpu().numpy()
     joints = output.joints.detach().cpu().numpy().squeeze()
     
-    
     # Optional Upscale
     if subdivision_iterations > 0:
         print(f"Subdividing mesh {subdivision_iterations} time(s)")
-        up_verts, up_faces, up_weights = utils.subdivide_with_weights(
-            base_vertices, base_faces, base_weights, iterations=subdivision_iterations
+        
+        # Pack weights and UVs into a dictionary
+        attrs = {'weights': base_weights}
+        if uv_coords is not None:
+            attrs['uvs'] = uv_coords
+            
+        up_verts, up_faces, new_attrs = utils.subdivide_by_attributes(
+            base_vertices, base_faces, attrs, iterations=subdivision_iterations
         )
+        up_weights = new_attrs['weights']
+        up_uvs = new_attrs.get('uvs', None)
     else:
         up_verts, up_faces, up_weights = base_vertices, base_faces, base_weights
+        up_uvs = uv_coords
     
     # Enforce Symmetry
     print("Enforcing bilateral symmetry")
     v_mirror = utils.find_vertex_symmetry(up_verts)
     j_mirror = utils.get_joint_symmetry_map(names)
-    sym_weights = utils.symmetrize_weights(up_weights, v_mirror, j_mirror)
+    sym_weights = utils.make_symmetric_weights(up_weights, v_mirror, j_mirror)
     
     # Segment using Symmetric Weights
     segmented_parts = utils.segment_by_provided_weights(
@@ -148,5 +171,7 @@ def smplx2mjcf(model: smplx.SMPLX,
                 pointcloud=up_verts,
                 faces=up_faces,
                 lbs_weights=sym_weights,
+                uv_coords=up_uvs,
+                texture_file=texture_file,
                 stl_folder=stl_folder,
                 output_file=output_file)

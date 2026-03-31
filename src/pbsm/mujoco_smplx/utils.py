@@ -21,6 +21,7 @@ import networkx as nx
 import numpy as np
 import trimesh
 from scipy.spatial.transform import Rotation as R
+from scipy.spatial import cKDTree
 
 torch.set_default_device('cpu')
 
@@ -150,14 +151,12 @@ def make_name_and_network() -> Tuple[List[str], nx.Graph]:
     return names, g
 
 
-def default_smplx_model(
-    model_path: str,
-    gender: str,
-    ext: str,
-    betas: torch.Tensor,
-    use_pca: bool = False,
-    flat_hand_mean: bool = True,
-    ) -> smplx.SMPLX:
+def default_smplx_model(model_path: str,
+                        gender: str,
+                        ext: str,
+                        betas: torch.Tensor,
+                        use_pca: bool = False,
+                        flat_hand_mean: bool = True) -> smplx.SMPLX:
     """
     Initialises and returns a default SMPL-X parametric body model.
 
@@ -182,14 +181,12 @@ def default_smplx_model(
         The instantiated SMPL-X model.
     """
     
-    model = smplx.SMPLX(
-        model_path,
-        gender=gender,
-        ext=ext,
-        betas=betas,
-        use_pca=use_pca,
-        flat_hand_mean=flat_hand_mean,
-        )
+    model = smplx.SMPLX(model_path,
+                        gender=gender,
+                        ext=ext,
+                        betas=betas,
+                        use_pca=use_pca,
+                        flat_hand_mean=flat_hand_mean)
     return model
 
 
@@ -210,7 +207,6 @@ def find_vertex_symmetry(vertices: np.ndarray) -> np.ndarray:
     np.ndarray
         A 1D array where the value at index `i` is the index of its mirrored vertex.
     """
-    from scipy.spatial import cKDTree
     
     # Create a mirrored version of the point cloud (flip X axis)
     mirrored_verts = vertices.copy()
@@ -240,26 +236,32 @@ def get_joint_symmetry_map(names: List[str]) -> Dict[int, int]:
         A dictionary mapping the integer index of a joint to the integer index of its symmetric counterpart.
     """
     joint_map = {}
+    
     for i, name in enumerate(names):
+        
         if name.startswith("left_"):
             right_name = name.replace("left_", "right_")
+            
             if right_name in names:
                 j = names.index(right_name)
                 joint_map[i] = j
                 joint_map[j] = i
+                
         elif name.startswith("right_"):
-            continue # Already handled by left_ check
+            continue  # Already handled by left_ check
+            
         else:
             # Central joints (spine, pelvis, etc.) map to themselves
             joint_map[i] = i
+            
     return joint_map
 
 
-def symmetrize_weights(lbs_weights: np.ndarray, 
-                       v_mirror_map: np.ndarray, 
-                       j_mirror_map: Dict[int, int]) -> np.ndarray:
+def make_symmetric_weights(lbs_weights: np.ndarray, 
+                           v_mirror_map: np.ndarray, 
+                           j_mirror_map: Dict[int, int]) -> np.ndarray:
     """
-    Averages LBS weights across the sagittal plane to enforce strict bilateral symmetry.
+    Averages LBS weights across the midsagittal plane to enforce bilateral symmetry.
 
     Parameters
     ----------
@@ -295,12 +297,12 @@ def symmetrize_weights(lbs_weights: np.ndarray,
     return sym_weights
 
 
-def subdivide_with_weights(vertices: np.ndarray, 
-                           faces: np.ndarray, 
-                           lbs_weights: np.ndarray, 
-                           iterations: int = 1) -> Tuple[np.ndarray]:
+def subdivide_by_attributes(vertices: np.ndarray, 
+                            faces: np.ndarray, 
+                            attributes_dict: dict, 
+                            iterations: int = 1) -> Tuple[np.ndarray, dict]:
     """
-    Subdivides the mesh while interpolating Linear Blend Skinning weights.
+    Subdivides the mesh while interpolating any vertex attributes
 
     Parameters
     ----------
@@ -308,8 +310,8 @@ def subdivide_with_weights(vertices: np.ndarray,
         A (N, 3) array of initial vertex coordinates.
     faces : np.ndarray
         A (F, 3) array of initial face indices.
-    lbs_weights : np.ndarray
-        A (N, J) array of initial vertex weights.
+    lbs_weights : dict
+        A dict of attributes.
     iterations : int, optional
         The number of subdivision iterations to perform, by default 1.
 
@@ -319,25 +321,72 @@ def subdivide_with_weights(vertices: np.ndarray,
         The upsampled (M, 3) vertex array.
     current_f : np.ndarray
         The upsampled (K, 3) face array.
-    current_w : np.ndarray
-        The interpolated (M, J) weights array corresponding to the new vertices.
+    current_w : dict
+        Upsampled attributes.
+
     """
-    
-    current_v = vertices
-    current_f = faces
-    current_w = lbs_weights
+    current_v = vertices.copy()
+    current_f = faces.copy()
+    current_attrs = attributes_dict.copy()
     
     for _ in range(iterations):
-        # trimesh automatically handles the barycentric/midpoint interpolation 
-        # for any arrays passed into vertex_attributes!
-        current_v, current_f, attributes = trimesh.remesh.subdivide(
+        current_v, current_f, new_attrs = trimesh.remesh.subdivide(
             vertices=current_v,
             faces=current_f,
-            vertex_attributes={'weights': current_w}
-        )
-        current_w = attributes['weights']
+            vertex_attributes=current_attrs
+            )
+        current_attrs = new_attrs
         
-    return current_v, current_f, current_w
+    return current_v, current_f, current_attrs
+
+
+def load_aligned_smplx_uv(obj_path: str, num_vertices: int = 10475) -> np.ndarray:
+    """
+    Parses an SMPL-X UV OBJ file and forces a strict 1-to-1 mapping 
+    between physical vertices and UV coordinates, discarding seam duplicates.
+
+    Parameters
+    ----------
+    obj_path : str
+        Path to .obj uv map file.
+    num_vertices : int, optional
+        The number of vertices. The default is 10475.
+
+    Returns
+    -------
+    uv_coords : np.ndarray
+        Mapped uv coordinates.
+
+    """
+    vts = []
+    uv_coords = np.zeros((num_vertices, 2))
+    
+    with open(obj_path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+                
+            if parts[0] == 'vt':
+                # Parse texture coordinates (U, V)
+                vts.append([float(parts[1]), float(parts[2])])
+                
+            elif parts[0] == 'f':
+                # Parse faces: v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3
+                for p in parts[1:]:
+                    vals = p.split('/')
+                    # OBJ indices are 1-based, so subtract 1
+                    v_idx = int(vals[0]) - 1
+                    
+                    if len(vals) > 1 and vals[1]:
+                        vt_idx = int(vals[1]) - 1
+                        
+                        # Assign the UV coordinate to the physical vertex.
+                        # Seam vertices will be overwritten by the last face that references them
+                        if v_idx < num_vertices:
+                            uv_coords[v_idx] = vts[vt_idx]
+                            
+    return uv_coords
 
 
 def segment_by_provided_weights(names: List[str],
@@ -387,9 +436,13 @@ def generate_full_body_mjcf(network: nx.Graph,
                             segment_joints: List[str],
                             pointcloud: np.ndarray,
                             faces: np.ndarray,          
-                            lbs_weights: np.ndarray,    
+                            lbs_weights: np.ndarray, 
+                            uv_coords: np.ndarray,
+                            texture_file: str = "smplx_texture.png",
                             stl_folder: str = "STL",
-                            output_file: str = "smplx_full_body.xml") -> None:
+                            output_file: str = "smplx_full_body.xml",
+                            stiffness: float = 0.1,
+                            damping: float = 0.1) -> None:
     """
     Generates a complete MuJoCo XML (MJCF) file for the segmented SMPL-X physics body.
 
@@ -412,14 +465,23 @@ def generate_full_body_mjcf(network: nx.Graph,
         A (F, 3) array of face indices for the skin mesh.
     lbs_weights : np.ndarray
         A (N, J) array of vertex skinning weights.
+    uv_coords : np.ndarray
+        uv mapping corrdinates.
+    texture_file : str, optional
+        Texture image. The default is "smplx_texture.png".
     stl_folder : str, optional
         The directory containing the generated STL collision meshes, by default "STL".
     output_file : str, optional
         The desired filename for the output MJCF XML, by default "smplx_full_body.xml".
+    stiffness : float, optional
+        DESCRIPTION. The default is 0.1.
+    damping : float, optional
+        DESCRIPTION. The default is 0.1.
 
     Returns
     -------
     None
+
     """
 
     mujoco = ET.Element("mujoco", model="smplx_physics_body")
@@ -429,11 +491,18 @@ def generate_full_body_mjcf(network: nx.Graph,
     
     default = ET.SubElement(mujoco, "default")
     ET.SubElement(default, "geom", type="mesh", density="1000", rgba="0.6 0.8 0.9 0.0", contype="1", conaffinity="1")
-    ET.SubElement(default, "joint", type="hinge", range="-1.5708 1.5708", damping="0.1", stiffness="0.1")
+    ET.SubElement(default, "joint", type="hinge", range="-1.5708 1.5708", damping=str(damping), stiffness=str(stiffness))
     
     # Asset Registration
     asset = ET.SubElement(mujoco, "asset")
-    ET.SubElement(asset, "material", name="skin_mat", specular="0.2", shininess="0.1", rgba="0.8 0.6 0.5 1")
+    
+    # Register the 2D Texture and map it to the material
+    if texture_file and os.path.exists(texture_file):
+        ET.SubElement(asset, "texture", type="2d", name="body_tex", file=texture_file)
+        ET.SubElement(asset, "material", name="skin_mat", texture="body_tex", specular="0.2", shininess="0.1", rgba="1 1 1 1")
+    else:
+        ET.SubElement(asset, "material", name="skin_mat", specular="0.2", shininess="0.1", rgba="0.8 0.6 0.5 1")
+    
     for joint in segment_joints:
         ET.SubElement(asset, "mesh", name=joint, file=f"{joint}.stl")
         
@@ -489,8 +558,9 @@ def generate_full_body_mjcf(network: nx.Graph,
     skin_elem.set("vertex", " ".join([f"{v:.5f}" for v in skin_verts_qpos0.flatten()]))
     skin_elem.set("face", " ".join([str(f) for f in faces.flatten()]))
     
-    # Weight clean-up pass
-    from scipy.spatial import cKDTree
+    # Add the UV coordinates
+    if uv_coords is not None:
+        skin_elem.set("texcoord", " ".join([f"{uv:.5f}" for uv in uv_coords.flatten()]))
     
     seg_idx = [names.index(j) for j in segment_joints]
     active_weights = lbs_weights[:, seg_idx].copy()
