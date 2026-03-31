@@ -328,8 +328,8 @@ def subdivide_by_attributes(vertices: np.ndarray,
                             faces: np.ndarray, 
                             attributes_dict: dict, 
                             iterations: int = 1) -> Tuple[np.ndarray, dict]:
-    """
-    Subdivides the mesh while interpolating any vertex attributes
+"""
+    Subdivides the mesh while interpolating any vertex attributes.
 
     Parameters
     ----------
@@ -337,7 +337,7 @@ def subdivide_by_attributes(vertices: np.ndarray,
         A (N, 3) array of initial vertex coordinates.
     faces : np.ndarray
         A (F, 3) array of initial face indices.
-    lbs_weights : dict
+    attributes_dict : dict
         A dict of attributes.
     iterations : int, optional
         The number of subdivision iterations to perform, by default 1.
@@ -348,7 +348,7 @@ def subdivide_by_attributes(vertices: np.ndarray,
         The upsampled (M, 3) vertex array.
     current_f : np.ndarray
         The upsampled (K, 3) face array.
-    current_w : dict
+    current_attrs : dict
         Upsampled attributes.
 
     """
@@ -470,7 +470,7 @@ def generate_full_body_mjcf(network: nx.Graph,
                             output_file: str = "smplx_full_body.xml",
                             stiffness: float = 0.1,
                             damping: float = 0.1) -> None:
-    """
+"""
     Generates a complete MuJoCo XML (MJCF) file for the segmented SMPL-X physics body.
 
     Builds the kinematic tree, handles skin attachment, assigns collision meshes 
@@ -493,22 +493,21 @@ def generate_full_body_mjcf(network: nx.Graph,
     lbs_weights : np.ndarray
         A (N, J) array of vertex skinning weights.
     uv_coords : np.ndarray
-        uv mapping corrdinates.
+        UV mapping coordinates.
     texture_file : str, optional
-        Texture image. The default is "smplx_texture.png".
+        Texture image, by default "smplx_texture.png".
     stl_folder : str, optional
         The directory containing the generated STL collision meshes, by default "STL".
     output_file : str, optional
         The desired filename for the output MJCF XML, by default "smplx_full_body.xml".
     stiffness : float, optional
-        DESCRIPTION. The default is 0.1.
+        Joint stiffness parameter applied to all joints in the MJCF file, by default 0.1.
     damping : float, optional
-        DESCRIPTION. The default is 0.1.
+        Joint damping parameter applied to all joints in the MJCF file, by default 0.1.
 
     Returns
     -------
     None
-
     """
 
     mujoco = ET.Element("mujoco", model="smplx_physics_body")
