@@ -31,7 +31,7 @@ def make_name_and_network() -> Tuple[List[str], nx.Graph]:
     """
     Creates a standardized list of SMPL-X joint names and a kinematic tree network.
 
-    This function defines the hierarchical skeleton of the SMPL-X model and maps 
+    This function defines the hierarchical skeleton of the SMPL-X model and maps
     it to a NetworkX graph to represent the physical connections between joints.
 
     Returns
@@ -41,7 +41,7 @@ def make_name_and_network() -> Tuple[List[str], nx.Graph]:
     g : nx.Graph
         A NetworkX graph representing the edges (bones) connecting the joints.
     """
-    
+
     names = [
     "pelvis","left_hip","right_hip",
     "spine1","left_knee","right_knee","spine2","left_ankle","right_ankle","spine3","left_foot","right_foot","neck",
@@ -183,26 +183,21 @@ def default_smplx_model(model_path: str,
     # type check input
     if not isinstance(model_path, str):
         raise TypeError("model_path must be a str")
-
     if not isinstance(gender, str):
         raise TypeError("gender must be a str")
-    
     if not isinstance(ext, str):
         raise TypeError("ext must be a str")
-    
     if not isinstance(use_pca, bool):
         raise TypeError("use_pca must be a bool")
-    
     if not isinstance(flat_hand_mean, bool):
         raise TypeError("flat_hand_mean must be a bool")
-
     if not isinstance(betas, torch.Tensor):
         raise TypeError("betas must be a torch.Tensor")
 
     # Ensure betas is float32
     if betas.dtype != torch.float32:
         betas = betas.to(torch.float32)
-    
+
     # create SMPL-X
     model = smplx.SMPLX(model_path,
                         gender=gender,
@@ -217,7 +212,7 @@ def find_vertex_symmetry(vertices: np.ndarray) -> np.ndarray:
     """
     Finds the index mapping for symmetric vertices in the SMPL-X template.
 
-    Creates a mirrored version of the point cloud across the X-axis and uses a KDTree 
+    Creates a mirrored version of the point cloud across the X-axis and uses a KDTree
     to map each vertex to its corresponding mirror index.
 
     Parameters
@@ -230,19 +225,19 @@ def find_vertex_symmetry(vertices: np.ndarray) -> np.ndarray:
     np.ndarray
         A 1D array where the value at index `i` is the index of its mirrored vertex.
     """
-    
+
     # type check input
     if not isinstance(vertices, np.ndarray):
         raise TypeError("vertices must be a numpy.ndarray")
-    
+
     # Create a mirrored version of the point cloud (flip X axis)
     mirrored_verts = vertices.copy()
     mirrored_verts[:, 0] *= -1
-    
+
     # Use a KDTree to find the nearest neighbor for every mirrored point
     tree = cKDTree(vertices)
     _, mirror_map = tree.query(mirrored_verts, k=1)
-    
+
     return mirror_map
 
 
@@ -266,29 +261,29 @@ def get_joint_symmetry_map(names: List[str]) -> Dict[int, int]:
         raise TypeError("names must be a list of strings")
 
     joint_map = {}
-    
+
     for i, name in enumerate(names):
-        
+
         if name.startswith("left_"):
             right_name = name.replace("left_", "right_")
-            
+
             if right_name in names:
                 j = names.index(right_name)
                 joint_map[i] = j
                 joint_map[j] = i
-                
+
         elif name.startswith("right_"):
             continue  # Already handled by left_ check
-            
+
         else:
             # Central joints (spine, pelvis, etc.) map to themselves
             joint_map[i] = i
-            
+
     return joint_map
 
 
-def make_symmetric_weights(lbs_weights: np.ndarray, 
-                           v_mirror_map: np.ndarray, 
+def make_symmetric_weights(lbs_weights: np.ndarray,
+                           v_mirror_map: np.ndarray,
                            j_mirror_map: Dict[int, int]) -> np.ndarray:
     """
     Averages LBS weights across the midsagittal plane to enforce bilateral symmetry.
@@ -306,7 +301,7 @@ def make_symmetric_weights(lbs_weights: np.ndarray,
     -------
     np.ndarray
         A (N, J) array of symmetrized LBS weights.
-    """    
+    """
     if not isinstance(lbs_weights, np.ndarray):
         raise TypeError("lbs_weights must be a numpy.ndarray")
     if not isinstance(v_mirror_map, np.ndarray):
@@ -315,27 +310,27 @@ def make_symmetric_weights(lbs_weights: np.ndarray,
         raise TypeError("j_mirror_map must be a dictionary")
 
     sym_weights = np.zeros_like(lbs_weights)
-    
+
     for i in range(len(lbs_weights)):
         mirror_v_idx = v_mirror_map[i]
-        
+
         for j in range(lbs_weights.shape[1]):
             mirror_j_idx = j_mirror_map[j]
-            
-            # The weight of vertex i for joint j should match 
+
+            # The weight of vertex i for joint j should match
             # the weight of vertex mirror_i for joint mirror_j
             val_a = lbs_weights[i, j]
             val_b = lbs_weights[mirror_v_idx, mirror_j_idx]
-            
+
             avg_weight = (val_a + val_b) / 2.0
             sym_weights[i, j] = avg_weight
-            
+
     return sym_weights
 
 
-def subdivide_by_attributes(vertices: np.ndarray, 
-                            faces: np.ndarray, 
-                            attributes_dict: dict, 
+def subdivide_by_attributes(vertices: np.ndarray,
+                            faces: np.ndarray,
+                            attributes_dict: dict,
                             iterations: int = 1) -> Tuple[np.ndarray, dict]:
     """
     Subdivides the mesh while interpolating any vertex attributes.
@@ -373,7 +368,7 @@ def subdivide_by_attributes(vertices: np.ndarray,
     current_v = vertices.copy()
     current_f = faces.copy()
     current_attrs = attributes_dict.copy()
-    
+
     for _ in range(iterations):
         current_v, current_f, new_attrs = trimesh.remesh.subdivide(
             vertices=current_v,
@@ -381,13 +376,13 @@ def subdivide_by_attributes(vertices: np.ndarray,
             vertex_attributes=current_attrs
             )
         current_attrs = new_attrs
-        
+
     return current_v, current_f, current_attrs
 
 
 def load_aligned_smplx_uv(obj_path: str, num_vertices: int = 10475) -> np.ndarray:
     """
-    Parses an SMPL-X UV OBJ file and forces a strict 1-to-1 mapping 
+    Parses an SMPL-X UV OBJ file and forces a strict 1-to-1 mapping
     between physical vertices and UV coordinates, discarding seam duplicates.
 
     Parameters
@@ -410,32 +405,32 @@ def load_aligned_smplx_uv(obj_path: str, num_vertices: int = 10475) -> np.ndarra
 
     vts = []
     uv_coords = np.zeros((num_vertices, 2))
-    
+
     with open(obj_path, 'r') as f:
         for line in f:
             parts = line.strip().split()
             if not parts:
                 continue
-                
+
             if parts[0] == 'vt':
                 # Parse texture coordinates (U, V)
                 vts.append([float(parts[1]), float(parts[2])])
-                
+
             elif parts[0] == 'f':
                 # Parse faces: v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3
                 for p in parts[1:]:
                     vals = p.split('/')
                     # OBJ indices are 1-based, so subtract 1
                     v_idx = int(vals[0]) - 1
-                    
+
                     if len(vals) > 1 and vals[1]:
                         vt_idx = int(vals[1]) - 1
-                        
+
                         # Assign the UV coordinate to the physical vertex.
                         # Seam vertices will be overwritten by the last face that references them
                         if v_idx < num_vertices:
                             uv_coords[v_idx] = vts[vt_idx]
-                            
+
     return uv_coords
 
 
@@ -446,7 +441,7 @@ def segment_by_provided_weights(names: List[str],
     """
     Segments the pointcloud based on a provided array of LBS weights.
 
-    Finds the dominant joint for each vertex based on the provided weight matrix 
+    Finds the dominant joint for each vertex based on the provided weight matrix
     and groups the vertices accordingly.
 
     Parameters
@@ -494,8 +489,8 @@ def generate_full_body_mjcf(network: nx.Graph,
                             joints: np.ndarray,
                             segment_joints: List[str],
                             pointcloud: np.ndarray,
-                            faces: np.ndarray,          
-                            lbs_weights: np.ndarray, 
+                            faces: np.ndarray,
+                            lbs_weights: np.ndarray,
                             uv_coords: np.ndarray,
                             texture_file: str = "smplx_texture.png",
                             stl_folder: str = "STL",
@@ -505,7 +500,7 @@ def generate_full_body_mjcf(network: nx.Graph,
     """
     Generates a complete MuJoCo XML (MJCF) file for the segmented SMPL-X physics body.
 
-    Builds the kinematic tree, handles skin attachment, assigns collision meshes 
+    Builds the kinematic tree, handles skin attachment, assigns collision meshes
     from STL files, and manages weight normalizations for the physics engine.
 
     Parameters
@@ -569,100 +564,100 @@ def generate_full_body_mjcf(network: nx.Graph,
         raise TypeError("damping must be a float or int")
 
     mujoco = ET.Element("mujoco", model="smplx_physics_body")
-    
+
     # Compiler and Defaults
     ET.SubElement(mujoco, "compiler", angle="radian", meshdir=stl_folder, autolimits="true")
-    
+
     default = ET.SubElement(mujoco, "default")
     ET.SubElement(default, "geom", type="mesh", density="1000", rgba="0.6 0.8 0.9 0.0", contype="1", conaffinity="1")
     ET.SubElement(default, "joint", type="hinge", range="-1.5708 1.5708", damping=str(damping), stiffness=str(stiffness))
-    
+
     # Asset Registration
     asset = ET.SubElement(mujoco, "asset")
-    
+
     # Register the 2D Texture and map it to the material
     if texture_file and os.path.exists(texture_file):
         ET.SubElement(asset, "texture", type="2d", name="body_tex", file=texture_file)
         ET.SubElement(asset, "material", name="skin_mat", texture="body_tex", specular="0.2", shininess="0.1", rgba="1 1 1 1")
     else:
         ET.SubElement(asset, "material", name="skin_mat", specular="0.2", shininess="0.1", rgba="0.8 0.6 0.5 1")
-    
+
     for joint in segment_joints:
         ET.SubElement(asset, "mesh", name=joint, file=f"{joint}.stl")
-        
+
     # Worldbody Setup
     worldbody = ET.SubElement(mujoco, "worldbody")
     ET.SubElement(worldbody, "light", pos="0 0 5", dir="0 0 -1", directional="true")
-    ET.SubElement(worldbody, "geom", type="plane", size="5 5 0.1", rgba="0.3 0.3 0.3 1", name="floor") 
-    
+    ET.SubElement(worldbody, "geom", type="plane", size="5 5 0.1", rgba="0.3 0.3 0.3 1", name="floor")
+
     def f2s(arr): return f"{arr[0]:.6f} {arr[1]:.6f} {arr[2]:.6f}"
-    
+
     # Recursive Tree Builder
     def build_tree(parent_elem: ET.Element, current_joint: str, parent_joint: str, parent_global_pos: np.ndarray):
         idx = names.index(current_joint)
         current_global_pos = joints[idx]
-        
+
         rel_pos = current_global_pos - parent_global_pos
         body_elem = ET.SubElement(parent_elem, "body", name=current_joint, pos=f2s(rel_pos))
-        
+
         ET.SubElement(body_elem, "joint", name=f"{current_joint}_x", axis="1 0 0")
         ET.SubElement(body_elem, "joint", name=f"{current_joint}_y", axis="0 1 0")
         ET.SubElement(body_elem, "joint", name=f"{current_joint}_z", axis="0 0 1")
-        
+
         geom_pos = -current_global_pos
         ET.SubElement(body_elem, "geom", mesh=current_joint, pos=f2s(geom_pos))
-        
+
         for neighbor in network.neighbors(current_joint):
             if neighbor != parent_joint and neighbor in segment_joints:
                 build_tree(body_elem, neighbor, current_joint, current_global_pos)
-                
+
     # Initialize the Root Body Upright & Calculate Skin Transform
     root_name = "pelvis"
     root_idx = names.index(root_name)
     root_global_pos = joints[root_idx]
-    
+
     r = R.from_euler('xyz', (90, 0, 0), degrees=True)
     verts_local = pointcloud - root_global_pos
     verts_rotated = r.apply(verts_local)
     min_z_local = np.min(verts_rotated[:, 2])
     spawn_pos = np.array([0.0, 0.0, -min_z_local])
-    
+
     skin_verts_qpos0 = verts_rotated + spawn_pos
-    
+
     root_body = ET.SubElement(worldbody, "body", name=root_name, pos=f2s(spawn_pos), euler="1.570796 0 0")
     ET.SubElement(root_body, "freejoint", name="root_freejoint")
     ET.SubElement(root_body, "geom", mesh=root_name, pos=f2s(-root_global_pos))
-    
+
     for neighbor in network.neighbors(root_name):
         if neighbor in segment_joints:
             build_tree(root_body, neighbor, root_name, root_global_pos)
-            
+
     # Generate the <skin> Element
     skin_elem = ET.SubElement(asset, "skin", name="smplx_skin", material="skin_mat")
     skin_elem.set("vertex", " ".join([f"{v:.5f}" for v in skin_verts_qpos0.flatten()]))
     skin_elem.set("face", " ".join([str(f) for f in faces.flatten()]))
-    
+
     # Add the UV coordinates
     if uv_coords is not None:
         skin_elem.set("texcoord", " ".join([f"{uv:.5f}" for uv in uv_coords.flatten()]))
-    
+
     seg_idx = [names.index(j) for j in segment_joints]
     active_weights = lbs_weights[:, seg_idx].copy()
-    
+
     # Filter out negligible weights
     active_weights[active_weights < 0.01] = 0.0
-    
+
     row_sums = active_weights.sum(axis=1)
     orphan_indices = np.where(row_sums == 0)[0]
-    
+
     # If any vertices have 0 weight, map them to the closest physical bone
     if len(orphan_indices) > 0:
         tree = cKDTree(joints[seg_idx])
         _, closest_j_idx = tree.query(pointcloud[orphan_indices])
-        
+
         active_weights[orphan_indices, closest_j_idx] = 1.0
         row_sums[orphan_indices] = 1.0
-        
+
     # Normalize so every vertex has exactly 1.0 total weight
     active_weights = active_weights / row_sums[:, np.newaxis]
 
@@ -670,18 +665,18 @@ def generate_full_body_mjcf(network: nx.Graph,
     for i, joint_name in enumerate(segment_joints):
         joint_weights = active_weights[:, i]
         influenced_verts = np.where(joint_weights > 0)[0]
-        
+
         if len(influenced_verts) == 0:
             continue
-            
+
         joint_idx = names.index(joint_name)
         raw_jpos = joints[joint_idx]
-        
+
         # Transform the bindpos exactly like the skin vertices
         jpos_local = raw_jpos - root_global_pos
         jpos_rotated = r.apply(jpos_local)
         jpos_qpos0 = jpos_rotated + spawn_pos
-        
+
         bone_elem = ET.SubElement(skin_elem, "bone", body=joint_name)
         bone_elem.set("bindpos", f2s(jpos_qpos0))
         bone_elem.set("bindquat", "0.7071068 0.7071068 0.0 0.0")
@@ -692,8 +687,8 @@ def generate_full_body_mjcf(network: nx.Graph,
     xml_str = ET.tostring(mujoco, encoding='utf-8')
     pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="    ")
     pretty_xml = os.linesep.join([s for s in pretty_xml.splitlines() if s.strip()])
-    
+
     with open(output_file, "w") as f:
         f.write(pretty_xml)
-        
+
     print(f"Generated full-body MJCF at: {output_file}")
