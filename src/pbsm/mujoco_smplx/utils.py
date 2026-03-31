@@ -180,7 +180,30 @@ def default_smplx_model(model_path: str,
     smplx.SMPLX
         The instantiated SMPL-X model.
     """
+    # type check input
+    if not isinstance(model_path, str):
+        raise TypeError("model_path must be a str")
+
+    if not isinstance(gender, str):
+        raise TypeError("gender must be a str")
     
+    if not isinstance(ext, str):
+        raise TypeError("ext must be a str")
+    
+    if not isinstance(use_pca, bool):
+        raise TypeError("use_pca must be a bool")
+    
+    if not isinstance(flat_hand_mean, bool):
+        raise TypeError("flat_hand_mean must be a bool")
+
+    if not isinstance(betas, torch.Tensor):
+        raise TypeError("betas must be a torch.Tensor")
+
+    # Ensure betas is float32
+    if betas.dtype != torch.float32:
+        betas = betas.to(torch.float32)
+    
+    # create SMPL-X
     model = smplx.SMPLX(model_path,
                         gender=gender,
                         ext=ext,
@@ -207,6 +230,10 @@ def find_vertex_symmetry(vertices: np.ndarray) -> np.ndarray:
     np.ndarray
         A 1D array where the value at index `i` is the index of its mirrored vertex.
     """
+    
+    # type check input
+    if not isinstance(vertices, np.ndarray):
+        raise TypeError("vertices must be a numpy.ndarray")
     
     # Create a mirrored version of the point cloud (flip X axis)
     mirrored_verts = vertices.copy()
