@@ -3,7 +3,7 @@
 """
 Physics-Based SMPL-X Modelling (PBSM)
 
-Create MCJF file from SMPLX model.
+Create MCJF file from SMPLX models or .vrm files.
 """
 
 # Standard Imports
@@ -30,8 +30,7 @@ def smplx2mjcf(model: smplx.SMPLX,
                obj_path: str = None,
                num_vertices: int = 10475,
                texture_file: str = "smplx_texture.png",
-               output_file: str = "smplx_full_body.xml",) -> None:
-
+               output_file: str = "smplx_full_body.xml") -> None:
     """
     Converts an SMPL-X parametric body model into a MuJoCo compatible MJCF format.
 
@@ -46,25 +45,27 @@ def smplx2mjcf(model: smplx.SMPLX,
         The instantiated SMPL-X model to convert.
     plotting : bool, optional
         If True, displays interactive Plotly 3D visualisations of the mesh, 
-        vertices, segmented parts, and convex hulls during processing, by default False.
+        vertices, segmented parts, and convex hulls during processing. Default is False.
     save : bool, optional
         If True, saves the generated STL collision meshes and the final MJCF XML file 
-        to the local disk, by default True.
+        to the local disk. Default is True.
     stl_folder : str, optional
         The name of the directory where the generated STL files for each body segment 
-        will be saved, by default "STL".
+        will be saved. Default is "STL".
     density_kg_per_m3 : float, optional
-        The density applied to the generated convex hulls for physics calculations, 
-        by default 1000.0.
+        The density applied to the generated convex hulls for physics calculations. 
+        Default is 1000.0.
     subdivision_iterations : int, optional
         The number of times to subdivide the mesh and interpolate weights for a 
-        smoother surface. Set to 0 to skip subdivision, by default 2.
-    num_vertices : int
-        The number of vertices, by default 10475.
-    texture_file : str
-        Path to texture .png file, by default "smplx_texture.png".
+        smoother surface. Set to 0 to skip subdivision. Default is 2.
+    obj_path : str, optional
+        Path to aligned SMPL-X .obj reference file to load UV coordinates. Default is None.
+    num_vertices : int, optional
+        The number of vertices expected in the model. Default is 10475.
+    texture_file : str, optional
+        Path to the texture .png file for the skin material. Default is "smplx_texture.png".
     output_file : str, optional
-        The filename for the generated MuJoCo XML (MJCF) file, by default "smplx_full_body.xml".
+        The filename for the generated MuJoCo XML (MJCF) file. Default is "smplx_full_body.xml".
 
     Returns
     -------
@@ -106,7 +107,6 @@ def smplx2mjcf(model: smplx.SMPLX,
     if subdivision_iterations > 0:
         print(f"Subdividing mesh {subdivision_iterations} time(s)")
         
-        # Pack weights and UVs into a dictionary
         attrs = {'weights': base_weights}
         if uv_coords is not None:
             attrs['uvs'] = uv_coords
@@ -131,7 +131,7 @@ def smplx2mjcf(model: smplx.SMPLX,
         names=names, 
         segment_joints=segment_joints, 
         pointcloud=up_verts, 
-        lbs_weights=sym_weights # Use the symmetrized version!
+        lbs_weights=sym_weights
     )
     
     if plotting:
@@ -177,13 +177,33 @@ def smplx2mjcf(model: smplx.SMPLX,
             stl_folder=stl_folder,
             output_file=output_file)
         
-        
+
 def vrm2mjcf(file_path: str,
              output_file: str = "vroid_model.xml",
              body_idx: int = 1,
              skin_index: int = 0,
              density_kg_per_m3: float = 1000.0) -> mv_utils.VRM:
+    """
+    Processes a VRM model to generate collision hulls and a MuJoCo MJCF XML file.
 
+    Parameters
+    ----------
+    file_path : str
+        Path to the input .vrm file.
+    output_file : str, optional
+        Filename for the generated MuJoCo XML file. Default is "vroid_model.xml".
+    body_idx : int, optional
+        Index of the primary mesh to extract skinning data from. Default is 1.
+    skin_index : int, optional
+        Index of the skin reference to use for the kinematic tree. Default is 0.
+    density_kg_per_m3 : float, optional
+        Density of the generated convex hulls in kg/m^3. Default is 1000.0.
+
+    Returns
+    -------
+    vrm_model : mv_utils.VRM
+        The instantiated and processed VRM class object.
+    """
     vrm_model = mv_utils.VRM(file_path)
     
     print(f"\nExtracting Data for Mesh {body_idx} (Body)...")
@@ -195,33 +215,50 @@ def vrm2mjcf(file_path: str,
         vertices=verts,
         bone_indices=bone_indices,
         bone_weights=bone_weights
-        )
+    )
     print(f"Segmented into {len(segmented_parts)} distinct body parts.")
     
     print("Generating Trimesh Convex Hulls...")
-    hulls_dict = vrm_model.generate_convex_hulls(segmented_parts,
-                                                 density_kg_per_m3)
+    hulls_dict = vrm_model.generate_convex_hulls(segmented_parts, density_kg_per_m3)
     print(f"Successfully generated {len(hulls_dict)} physics hulls.")
     
     print("\nGenerating final MuJoCo XML...")
-    # Pass the raw vertices so we can still calculate the minimum Z floor height
     vrm_model.generate_mjcf(
         skin_index=skin_index,
         raw_vertices=verts,
         hulls_dict=hulls_dict,
         output_file=output_file
-        )
+    )
     print(f"\nGenerated MuJoCo XML at: {output_file}")
     
     return vrm_model
+
 
 def vrm_sim(output_file: str,
             vrm_model: mv_utils.VRM,
             body_idx: int = 1,
             skin_index: int = 0,
-            runtime: int = 300):
+            runtime: int = 300) -> None:
+    """
+    Initializes the MuJoCo physics model and starts the WebSocket server for the VRM web viewer.
 
-    # Initialize model to check compilation before streaming
+    Parameters
+    ----------
+    output_file : str
+        Path to the compiled MuJoCo MJCF XML file.
+    vrm_model : mv_utils.VRM
+        The processed VRM class object containing the skeleton and skinning data.
+    body_idx : int, optional
+        Index of the mesh used (included for pipeline reference logging). Default is 1.
+    skin_index : int, optional
+        Index of the skin used in the VRM model. Default is 0.
+    runtime : int, optional
+        Maximum duration in seconds for which the simulation should run. Default is 300.
+
+    Returns
+    -------
+    None
+    """
     model = mujoco.MjModel.from_xml_path(output_file)
     data = mujoco.MjData(model)
     mujoco.mj_resetData(model, data)

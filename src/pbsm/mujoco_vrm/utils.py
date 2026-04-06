@@ -37,26 +37,27 @@ import websockets
 
 class VRM(object):
     """
-    A class for parsing .vrm files and simulating them using Mujoco for physics and Three.js for rendering.
+    A class for parsing .vrm files and simulating them using MuJoCo for physics 
+    and Three.js for rendering.
 
     * Reads .vrm files as a glTF file using pygltflib.
-    * Extracts the kinematic tree and automatically converts it to a networkx graph.
-    * Segments the body mesh, and converts the vertices to convex hulls for physics simulation using trimesh.
-    * Combines the networkx graph and convex hulls into a Mujoco MJCF .xml file.
-    * Runs Mujoco and Three.js to simulate and render the .vrm file
+    * Extracts the kinematic tree and automatically converts it to a NetworkX graph.
+    * Segments the body mesh and converts the vertices to convex hulls using trimesh.
+    * Combines the network graph and convex hulls into a MuJoCo MJCF .xml file.
+    * Runs MuJoCo and Three.js to simulate and render the .vrm file.
     """
 
     def __init__(self, file_path: str) -> None:
         """
         Initialise the VRM class.
 
-        Parses in the .vrm file as a glTF file using pygltflib.
+        Parses the .vrm file as a glTF file using pygltflib and extracts
+        available skinning/skeleton data.
 
         Parameters
         ----------
         file_path : str
-            File path to .vrm file.
-
+            File path to the input .vrm file.
         """
         self.file_path = file_path
         self.gltf = self._load_and_inspect(file_path)
@@ -69,8 +70,7 @@ class VRM(object):
                     "names": names,
                     "network": network,
                     "global_joints": joints,
-                    })
-
+                })
 
     # %% Public Functions
 
@@ -78,12 +78,14 @@ class VRM(object):
         """
         Extracts the kinematic tree and global joint positions.
 
-        The kinematic tree for all parts of the .vrm file is the same so will read from the first part.
+        The kinematic tree for all parts of the .vrm file is the same, so it 
+        will default to reading from the first skin part.
 
         Parameters
         ----------
         skin_index : int, optional
-            Index of the part to read the kinematic tree from in the .vrm file. The default is 0.
+            Index of the part to read the kinematic tree from in the .vrm file. 
+            Default is 0.
 
         Returns
         -------
@@ -92,8 +94,7 @@ class VRM(object):
         network : nx.DiGraph
             Network graph of the kinematic tree.
         global_joints : np.ndarray
-            Global cartesian positions of each joint.
-
+            Global Cartesian positions of each joint as a float array of shape (N, 3).
         """
         skin = self.gltf.skins[skin_index]
         joint_indices = skin.joints
@@ -140,27 +141,25 @@ class VRM(object):
 
         return names, network, global_joints
 
-
-    def extract_mesh_skinning_data(self, mesh_index: int) -> Tuple[np.ndarray]:
+    def extract_mesh_skinning_data(self, mesh_index: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Extracts and merges vertices, faces, joints, and LBS weights.
+        Extracts and merges vertices, faces, joints, and LBS weights for a mesh.
 
         Parameters
         ----------
         mesh_index : int
-            Index of mesh to be extracted.
+            Index of the mesh to be extracted from the glTF file.
 
         Returns
         -------
         vertices_out : np.ndarray
-            Vertices array.
+            Vertices array of shape (V, 3).
         faces_out : np.ndarray
-            Faces array.
+            Faces (indices) array of shape (F, 3).
         joints_out : np.ndarray
-            Joint array.
+            Joint indices array of shape (V, 4) mapping vertices to bones.
         weights_out : np.ndarray
-            Linear bending sampling weights array.
-
+            Linear Blend Skinning (LBS) influence weights array of shape (V, 4).
         """
         mesh = self.gltf.meshes[mesh_index]
 
@@ -194,34 +193,33 @@ class VRM(object):
 
         return vertices_out, faces_out, joints_out, weights_out
 
-
     def segment_by_dominant_joint(self,
                                   skin_index: int,
                                   vertices: np.ndarray,
                                   bone_indices: np.ndarray,
                                   bone_weights: np.ndarray) -> Dict[str, np.ndarray]:
         """
-        Segment the mesh by node (bone) that has hightest influence.
+        Segment the mesh by the node (bone) that has the highest influence.
 
-        Groups mesh vertices together by the node/bone that has the largest linear blended skinning
-        weight.
+        Groups mesh vertices together by the node/bone that has the largest 
+        linear blended skinning weight, offsetting them to the joint's local space.
 
         Parameters
         ----------
         skin_index : int
-            Index of the mesh to be segmented.
+            Index of the skin reference used to extract joints.
         vertices : np.ndarray
-            Mesh vertices.
+            Array of mesh vertices.
         bone_indices : np.ndarray
-            Node indces.
+            Array of node indices affecting the vertices.
         bone_weights : np.ndarray
-            Node LBS weights.
+            Array of node LBS weights affecting the vertices.
 
         Returns
         -------
         segmented_parts : Dict[str, np.ndarray]
-            Dictionary of the node string and numpy array of segmented vertices.
-
+            Dictionary mapping the node string name to a NumPy array of its segmented, 
+            locally-offset vertices.
         """
         names = self.skins_data[skin_index]['names']
         joints = self.skins_data[skin_index]['global_joints']
@@ -241,28 +239,26 @@ class VRM(object):
 
         return segmented_parts
 
-
     def generate_convex_hulls(self,
                               segmented_parts: Dict[str, np.ndarray],
                               density_kg_per_m3: float = 1000.0) -> Dict[str, trimesh.Trimesh]:
         """
         Generate convex hulls for each segmented part.
         
-        Creates convex hulls for each segmented part of the body mesh, applying a density
-        to calculate the inertia and mass of the body part.
+        Creates 3D convex hulls for each segmented part of the body mesh, applying 
+        a density to calculate the physics inertia and mass of the body part.
 
         Parameters
         ----------
         segmented_parts : Dict[str, np.ndarray]
-            Segmented parts and meshes dictionary.
+            Dictionary of segmented part names mapped to vertex pointclouds.
         density_kg_per_m3 : float, optional
-            Density of the parts in kg/m^3. The default is 1000.0.
+            Density of the generated hulls in kg/m^3. Default is 1000.0.
 
         Returns
         -------
         hulls_dict : Dict[str, trimesh.Trimesh]
-            Dictionary of segmented part names and convex hulls.
-
+            Dictionary mapping segmented part names to their trimesh convex hull objects.
         """
         hulls_dict = {}
         for joint_name, points in segmented_parts.items():
@@ -281,8 +277,26 @@ class VRM(object):
                       hulls_dict: dict,
                       stl_folder: str = "STL",
                       output_file: str = "vrm_physics_body.xml") -> None:
-        """Generates the pure physics-focused MuJoCo XML kinematic tree and hulls."""
-        
+        """
+        Generates the pure physics-focused MuJoCo XML (MJCF) kinematic tree and exports hulls.
+
+        Parameters
+        ----------
+        skin_index : int
+            Index of the skin reference to construct the kinematic tree.
+        raw_vertices : np.ndarray
+            Array of raw vertex positions, used to calculate the physical floor offset.
+        hulls_dict : dict
+            Dictionary mapping joint names to `trimesh.Trimesh` convex hulls.
+        stl_folder : str, optional
+            Directory to export the generated STL collision files. Default is "STL".
+        output_file : str, optional
+            Filename for the generated MJCF XML file. Default is "vrm_physics_body.xml".
+
+        Returns
+        -------
+        None
+        """
         if os.path.exists(stl_folder):
             shutil.rmtree(stl_folder)
         os.mkdir(stl_folder)
@@ -302,7 +316,6 @@ class VRM(object):
             ET.SubElement(asset, "mesh", name=name, file=f"{name}.stl")
 
         worldbody = ET.SubElement(mujoco, "worldbody")
-
         ET.SubElement(worldbody, "geom", type="plane", size="5 5 0.1", name="floor",
                       zaxis="0 1 0", contype="0", conaffinity="1")
 
@@ -370,6 +383,24 @@ class VRM(object):
                              show_viewer: bool = True) -> None:
         """
         Runs the HTTP server, MuJoCo decoupled physics loop, and WebSocket stream.
+
+        Parameters
+        ----------
+        skin_index : int
+            Index of the skin reference to map physics joints.
+        output_file : str
+            Path to the compiled MuJoCo MJCF XML file to simulate.
+        runtime : float, optional
+            Maximum simulation duration in seconds. Default is 300.
+        port : int, optional
+            Local port used for the WebSocket broadcaster. Default is 8765.
+        show_viewer : bool, optional
+            If True, launches the native MuJoCo passive viewer alongside the headless web socket. 
+            Default is True.
+
+        Returns
+        -------
+        None
         """
         def serve_http():
             class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -384,7 +415,6 @@ class VRM(object):
 
         threading.Thread(target=serve_http, daemon=True).start()
         print("\n[Server] HTTP Viewer hosted at http://localhost:8000/index.html")
-        webbrowser.open("http://localhost:8000/index.html")
 
         model = mujoco.MjModel.from_xml_path(output_file)
         data = mujoco.MjData(model)
@@ -393,9 +423,7 @@ class VRM(object):
 
         viewer = mujoco.viewer.launch_passive(model, data) if show_viewer else None
 
-        # names = self.skins_data[skin_index]['names']
         network = self.skins_data[skin_index]['network']
-
         roots = [n for n, d in network.in_degree() if d == 0]
         root_name = roots[0]
 
@@ -438,7 +466,6 @@ class VRM(object):
 
                         if jnt_type == mujoco.mjtJoint.mjJNT_FREE:
                             px, py, pz, qw, qx, qy, qz = data.qpos[adr : adr + 7]
-
                             body_id = model.jnt_bodyid[jnt_id]
                             body_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
 
@@ -478,11 +505,37 @@ class VRM(object):
     # %% Private Functions
 
     def _load_and_inspect(self, file_path: str) -> pygltflib.GLTF2:
+        """
+        Loads the .vrm binary file using pygltflib.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the target VRM file.
+
+        Returns
+        -------
+        gltf : pygltflib.GLTF2
+            The parsed glTF object.
+        """
         gltf = pygltflib.GLTF2().load_binary(file_path)
         print(f"Successfully loaded: {file_path}")
         return gltf
 
     def _get_accessor_data(self, accessor_idx: int) -> np.ndarray:
+        """
+        Reads raw binary glTF buffer data and converts it into a Numpy array.
+
+        Parameters
+        ----------
+        accessor_idx : int
+            Index of the accessor within the glTF file.
+
+        Returns
+        -------
+        array : np.ndarray
+            The formatted numeric array corresponding to the accessor data.
+        """
         if accessor_idx is None:
             return None
 
