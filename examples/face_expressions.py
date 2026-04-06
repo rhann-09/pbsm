@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation as R
 import mujoco
 import mujoco.viewer
 import pbsm.mujoco_smplx.utils as utils
-from pbsm.mujoco_smplx.main import smplx2mjcf
+from pbsm.main import smplx2mjcf
 
 
 model_path = "/home/mango/pbsm_dev/models/SMPLX_FEMALE.pkl"
