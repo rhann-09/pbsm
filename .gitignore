@@ -14,4 +14,4 @@ dist/
 .venv/
 env/
 
-examples/STLs
+examples/STLs/
