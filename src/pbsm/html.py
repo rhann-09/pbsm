@@ -1,4 +1,21 @@
-<!DOCTYPE html>
+#!/home/mango/anaconda3/envs/ai/bin/python
+# -*- coding: utf-8 -*-
+"""
+Date: Tue Apr  7 23:44:31 2026
+Author: Reuben H. (mango)
+
+Project:
+    ...
+
+Description:
+    ...
+
+Usage:
+    ...
+
+"""
+def make_html_file(vrm_path: str) -> None:
+    html_string = """<!DOCTYPE html>
 <html>
 <head>
     <title>PBSM VRM Viewer</title>
@@ -54,7 +71,7 @@
         const loader = new GLTFLoader();
         loader.register((parser) => new VRMLoaderPlugin(parser));
         
-        loader.load('template_model.vrm', (gltf) => {
+        loader.load('$vrm_path', (gltf) => {
             currentVrm = gltf.userData.vrm;
             scene.add(currentVrm.scene);
             
@@ -143,4 +160,12 @@
         });
     </script>
 </body>
-</html>
+</html>"""
+
+    html_string = html_string.replace("$vrm_path", str(vrm_path))
+    return html_string
+
+
+
+
+html_string = make_html_file("$2")

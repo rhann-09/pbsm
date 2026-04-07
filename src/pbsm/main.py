@@ -6,6 +6,8 @@ Physics-Based SMPL-X Modelling (PBSM)
 Create MCJF file from SMPLX models or .vrm files.
 """
 
+# %% Imports
+
 # Standard Imports
 import os
 import shutil
@@ -20,6 +22,7 @@ from pbsm.mujoco_smplx import utils as ms_utils
 from pbsm.mujoco_smplx import plot as ms_plot
 from pbsm.mujoco_vrm import utils as mv_utils
 
+# %% Functions
 
 def smplx2mjcf(model: smplx.SMPLX,
                plotting: bool = False,
@@ -238,7 +241,8 @@ def vrm_sim(output_file: str,
             vrm_model: mv_utils.VRM,
             body_idx: int = 1,
             skin_index: int = 0,
-            runtime: int = 300) -> None:
+            runtime: int = 300,
+            physics_callback: callable = None) -> None:
     """
     Initializes the MuJoCo physics model and starts the WebSocket server for the VRM web viewer.
 
@@ -268,5 +272,164 @@ def vrm_sim(output_file: str,
     vrm_model.start_physics_stream(
         skin_index=skin_index,
         output_file=output_file,
-        runtime=runtime
+        runtime=runtime,
+        physics_callback=physics_callback,
     )
+    
+def make_html_file(vrm_path: str,
+                   save_path: str = "index.html") -> None:
+    """
+    Make index.html file.
+    """
+    html_string = """<!DOCTYPE html>
+<html>
+<head>
+    <title>PBSM VRM Viewer</title>
+    <style>body { margin: 0; overflow: hidden; background-color: #222; }</style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.154.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.154.0/examples/jsm/",
+                "@pixiv/three-vrm": "https://unpkg.com/@pixiv/three-vrm@2.0.0/lib/three-vrm.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // 1. Setup Scene, Camera, WebGL Renderer, and Lights
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xa0b0d0); 
+
+        const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20.0);
+        camera.position.set(0.0, 1.5, 5.0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0.0, 1.0, 0.0);
+        controls.update();
+
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        hemiLight.position.set(0, 10, 0);
+        scene.add(hemiLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        dirLight.position.set(1.0, 2.0, 3.0).normalize();
+        scene.add(dirLight);
+
+        const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x888888);
+        scene.add(gridHelper);
+
+        // 2. Load the VRM Model
+        let currentVrm = null;
+        const loader = new GLTFLoader();
+        loader.register((parser) => new VRMLoaderPlugin(parser));
+        
+        loader.load('$vrm_path', (gltf) => {
+            currentVrm = gltf.userData.vrm;
+            scene.add(currentVrm.scene);
+            
+            // Disable frustum culling so eyes/outfit don't disappear
+            currentVrm.scene.traverse((child) => {
+                if (child.isMesh) {
+                    child.frustumCulled = false;
+                }
+            });
+
+            console.log("VRM Loaded Successfully!");
+        }, undefined, (error) => console.error(error));
+
+        // 3. Setup WebSocket Listener with Auto-Reconnect
+        let socket;
+        let latestPhysicsState = null;
+        
+        function connectWebSocket() {
+            socket = new WebSocket('ws://localhost:8765');
+            
+            socket.onopen = () => {
+                console.log("Connected to MuJoCo Physics Server!");
+                // Optional: You can force a page reload here if you want a totally fresh VRM spawn
+                // window.location.reload(); 
+            };
+            
+            socket.onmessage = function(event) {
+                if (!currentVrm) return;
+                latestPhysicsState = JSON.parse(event.data);
+            };
+
+            socket.onclose = function(e) {
+                console.log("Server disconnected. Attempting to reconnect in 2 seconds...");
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            socket.onerror = function(err) {
+                socket.close(); // Force close to trigger the onclose reconnect loop
+            };
+        }
+        
+        // Boot the connection
+        connectWebSocket();
+
+        // 4. Render Loop
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            const deltaTime = clock.getDelta();
+            
+            // Step A: Let VRM update its materials, outlines, and bouncy spring bones
+            if (currentVrm) {
+               currentVrm.update(deltaTime); 
+            }
+            
+            // Step B: OVERRIDE the bones with MuJoCo's physics state AFTER the VRM update
+            if (currentVrm && latestPhysicsState) {
+                currentVrm.scene.traverse((child) => {
+                    if (!child.isMesh && latestPhysicsState[child.name]) {
+                        
+                        // FIX 2: Properly reference child.name instead of the undefined 'name' variable
+                        if (child.name && child.name.toLowerCase().includes("eye")) {
+                            return; 
+                        }
+
+                        const data = latestPhysicsState[child.name];
+                        
+                        if (data.rot) {
+                            child.quaternion.set(data.rot.x, data.rot.y, data.rot.z, data.rot.w);
+                        }
+                        if (data.pos) {
+                            child.position.set(data.pos.x, data.pos.y, data.pos.z);
+                        }
+                    }
+                });
+            }
+            
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>"""
+
+    # replace path to .vrm file 
+    html_string = html_string.replace("$vrm_path", str(vrm_path))
+
+    with open(save_path, "w") as file:
+        file.write(html_string)

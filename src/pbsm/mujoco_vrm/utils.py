@@ -31,6 +31,8 @@ import numpy as np
 import pygltflib
 import trimesh
 import websockets
+import smplx
+from scipy.spatial.transform import Rotation as R
 
 
 # %% Classes
@@ -71,8 +73,6 @@ class VRM(object):
                     "network": network,
                     "global_joints": joints,
                 })
-
-    # %% Public Functions
 
     def extract_vrm_skeleton(self, skin_index: int = 0) -> Tuple[List[str], nx.DiGraph, np.ndarray]:
         """
@@ -380,7 +380,8 @@ class VRM(object):
                              output_file: str,
                              runtime: float = 300,
                              port: int = 8765,
-                             show_viewer: bool = True) -> None:
+                             show_viewer: bool = True,
+                             physics_callback: callable = None) -> None:
         """
         Runs the HTTP server, MuJoCo decoupled physics loop, and WebSocket stream.
 
@@ -437,6 +438,10 @@ class VRM(object):
                     break
 
                 step_start = time.time()
+                
+                if physics_callback:
+                    physics_callback(model, data)
+                
                 mujoco.mj_step(model, data)
 
                 if viewer:
@@ -501,8 +506,6 @@ class VRM(object):
             loop.run_forever()
         except KeyboardInterrupt:
             print("\nShutdown gracefully.")
-
-    # %% Private Functions
 
     def _load_and_inspect(self, file_path: str) -> pygltflib.GLTF2:
         """
@@ -585,3 +588,161 @@ class VRM(object):
             array = array.astype(np.float32)
 
         return array
+    
+    
+class SMPLX2VRM:
+    """
+    Converts SMPL-X motion sequences into VRM compatible rotations.
+    """
+
+    def __init__(self, vrm_model):
+        self.SMPLX_TO_VRM_MAP = {
+            'pelvis': 'hips',
+            'spine1': 'spine',
+            'spine2': 'chest',
+            'spine3': 'upperChest',
+            'neck': 'neck',
+            'head': 'head',
+            'left_collar': 'leftShoulder',
+            'left_shoulder': 'leftUpperArm',
+            'left_elbow': 'leftLowerArm',
+            'left_wrist': 'leftHand',
+            'right_collar': 'rightShoulder',
+            'right_shoulder': 'rightUpperArm',
+            'right_elbow': 'rightLowerArm',
+            'right_wrist': 'rightHand',
+            'left_hip': 'leftUpperLeg',
+            'left_knee': 'leftLowerLeg',
+            'left_ankle': 'leftFoot',
+            'left_foot': 'leftToes',
+            'right_hip': 'rightUpperLeg',
+            'right_knee': 'rightLowerLeg',
+            'right_ankle': 'rightFoot',
+            'right_foot': 'rightToes',
+        }
+        
+        self.SMPLX_JOINT_ORDER = [
+            'pelvis', 'left_hip', 'right_hip', 'spine1', 'left_knee',
+            'right_knee', 'spine2', 'left_ankle', 'right_ankle', 'spine3',
+            'left_foot', 'right_foot', 'neck', 'left_collar', 'right_collar',
+            'head', 'left_shoulder', 'right_shoulder', 'left_elbow', 
+            'right_elbow', 'left_wrist', 'right_wrist'
+        ]
+        
+        self.vrm = vrm_model
+        self.vrm_humanoid_map = self._extract_humanoid_map()
+
+    def _extract_humanoid_map(self) -> dict:
+        """
+        Robustly extracts the humanoid bone map supporting VRM 0.x, VRM 1.0, 
+        and failing back to fuzzy name matching if glTF extensions are missing.
+        """
+        humanoid_map = {}
+        
+        # 1. Try extracting via standard glTF extensions
+        if self.vrm.gltf.extensions:
+            # Schema for VRM 0.x
+            if 'VRM' in self.vrm.gltf.extensions:
+                humanoid = self.vrm.gltf.extensions['VRM'].get('humanoid', {})
+                for bone in humanoid.get('humanBones', []):
+                    bone_name = bone.get('bone')
+                    node_idx = bone.get('node')
+                    if bone_name and node_idx is not None:
+                        humanoid_map[bone_name] = self.vrm.gltf.nodes[node_idx].name
+                        
+            # Schema for VRM 1.0
+            elif 'VRMC_vrm' in self.vrm.gltf.extensions:
+                humanoid = self.vrm.gltf.extensions['VRMC_vrm'].get('humanoid', {})
+                for bone_name, bone_data in humanoid.get('humanBones', {}).items():
+                    node_idx = bone_data.get('node')
+                    if node_idx is not None:
+                        humanoid_map[bone_name] = self.vrm.gltf.nodes[node_idx].name
+
+        # 2. Fallback: Fuzzy matching against the MuJoCo skin skeleton
+        if not humanoid_map:
+            print("[Warning] Could not parse VRM extensions. Using fuzzy name matching.")
+            names = self.vrm.skins_data[0]['names']
+            
+            fuzzy_map = {
+                'hips': ['hips', 'pelvis'],
+                'spine': ['spine'],
+                'chest': ['chest', 'spine1'],
+                'upperChest': ['upperchest', 'spine2'],
+                'neck': ['neck'],
+                'head': ['head'],
+                'leftShoulder': ['l_shoulder', 'leftshoulder', 'l_collar'],
+                'leftUpperArm': ['l_upperarm', 'leftupperarm', 'l_arm'],
+                'leftLowerArm': ['l_lowerarm', 'leftlowerarm', 'l_elbow'],
+                'leftHand': ['l_hand', 'lefthand', 'l_wrist'],
+                'rightShoulder': ['r_shoulder', 'rightshoulder', 'r_collar'],
+                'rightUpperArm': ['r_upperarm', 'rightupperarm', 'r_arm'],
+                'rightLowerArm': ['r_lowerarm', 'rightlowerarm', 'r_elbow'],
+                'rightHand': ['r_hand', 'righthand', 'r_wrist'],
+                'leftUpperLeg': ['l_upperleg', 'leftupperleg', 'l_leg', 'l_thigh'],
+                'leftLowerLeg': ['l_lowerleg', 'leftlowerleg', 'l_knee'],
+                'leftFoot': ['l_foot', 'leftfoot', 'l_ankle'],
+                'leftToes': ['l_toe', 'lefttoe'],
+                'rightUpperLeg': ['r_upperleg', 'rightupperleg', 'r_leg', 'r_thigh'],
+                'rightLowerLeg': ['r_lowerleg', 'rightlowerleg', 'r_knee'],
+                'rightFoot': ['r_foot', 'rightfoot', 'r_ankle'],
+                'rightToes': ['r_toe', 'righttoe']
+            }
+            
+            for standard_bone, search_terms in fuzzy_map.items():
+                for name in names:
+                    name_lower = name.lower()
+                    if any(term in name_lower for term in search_terms):
+                        # Prevent 'spine1' from accidentally matching the base 'spine'
+                        if standard_bone == 'spine' and ('chest' in name_lower or '1' in name_lower or '2' in name_lower):
+                            continue
+                        humanoid_map[standard_bone] = name
+                        break
+
+        return humanoid_map
+    
+    def process_smplx_state(self, smplx_instance: smplx.SMPLX) -> dict:
+        """
+        Parses a PyTorch SMPL-X instance state and converts it to VRM rotations.
+        """
+        global_orient = smplx_instance.global_orient.detach().cpu().numpy().reshape(-1, 3)
+        body_pose = smplx_instance.body_pose.detach().cpu().numpy().reshape(-1, 3)
+            
+        all_poses = np.vstack([global_orient, body_pose]) 
+        
+        smplx_local_rotations = {}
+        for idx, joint_name in enumerate(self.SMPLX_JOINT_ORDER):
+            if idx < len(all_poses):
+                smplx_local_rotations[joint_name] = all_poses[idx]
+                
+        return self.retarget_pose(smplx_local_rotations)
+
+    def retarget_pose(self, smplx_local_rotations: dict) -> dict:
+        """
+        Takes a dictionary of SMPL-X joint rotations and returns VRM bone rotations.
+        """
+        vrm_rotations = {}
+
+        for smplx_joint, rotation in smplx_local_rotations.items():
+            if smplx_joint not in self.SMPLX_TO_VRM_MAP:
+                continue
+            
+            vrm_bone_std = self.SMPLX_TO_VRM_MAP[smplx_joint]
+            
+            if vrm_bone_std not in self.vrm_humanoid_map:
+                continue
+                
+            vrm_node_name = self.vrm_humanoid_map[vrm_bone_std]
+
+            r = R.from_rotvec(rotation)
+            quat = r.as_quat()
+
+            vrm_rotations[vrm_node_name] = {
+                "rot": {
+                    "x": float(quat[0]), 
+                    "y": float(quat[1]), 
+                    "z": float(quat[2]), 
+                    "w": float(quat[3])
+                }
+            }
+            
+        return vrm_rotations
