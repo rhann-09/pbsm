@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PBSM Multi-Entity Viewer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; }
+        canvas { display: block; }
+    </style>
+    
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.154.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.154.0/examples/jsm/",
+          "@pixiv/three-vrm": "https://unpkg.com/@pixiv/three-vrm@2.0.0/lib/three-vrm.module.js"
+        }
+      }
+    </script>
+</head>
+<body>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+        import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+
+        const SCENE_CONFIG = {{ scene_config | tojson }};
+
+        // --- 1. LIVE DATA BUFFER ---
+        let latestState = null;
+        const loadedEntities = {}; 
+        const clock = new THREE.Clock(); 
+
+        // --- 2. WEBSOCKET CONNECTION ---
+        const wsPort = SCENE_CONFIG.ws_port || 8765; 
+        const ws = new WebSocket(`ws://localhost:${wsPort}`);
+        
+        ws.onopen = () => console.log("🟢 WebSocket connected to Python Backend!");
+        ws.onerror = (error) => console.error("🔴 WebSocket Error:", error);
+        
+        ws.onmessage = (event) => {
+            latestState = JSON.parse(event.data);
+        };
+
+        // --- 3. BASIC THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 3, 6);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 1.0, 0);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.1)); // Increased slightly so expressions are visible
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        dirLight.position.set(2, 5, 2).normalize();
+        scene.add(dirLight);
+
+        const gridHelper = new THREE.GridHelper(20, 20);
+        scene.add(gridHelper);
+
+        // --- 4. DYNAMIC SCENE GENERATION ---
+        const vrmLoader = new GLTFLoader();
+        vrmLoader.register((parser) => new VRMLoaderPlugin(parser));
+        const stlLoader = new STLLoader();
+
+        if (SCENE_CONFIG.entities) {
+            for (const [entName, entConfig] of Object.entries(SCENE_CONFIG.entities)) {
+                
+                if (entConfig.type === "VRM") {
+                    vrmLoader.load(entConfig.file, (gltf) => {
+                        const vrm = gltf.userData.vrm;
+                        loadedEntities[entName] = vrm;
+                        scene.add(vrm.scene); 
+                    });
+                } 
+                else if (entConfig.type === "BOX") {
+                    const geo = new THREE.BoxGeometry(entConfig.size[0], entConfig.size[1], entConfig.size[2]);
+                    const mat = new THREE.MeshStandardMaterial({ color: 0x44aa44 }); 
+                    const mesh = new THREE.Mesh(geo, mat);
+                    loadedEntities[entName] = mesh;
+                    scene.add(mesh);
+                } 
+                else if (entConfig.type === "CYLINDER") {
+                    const geo = new THREE.CylinderGeometry(entConfig.radius, entConfig.radius, entConfig.height, 32);
+                    geo.rotateX(Math.PI / 2); // Align to Z-up
+                    const mat = new THREE.MeshStandardMaterial({ color: 0xaa4444 }); 
+                    const mesh = new THREE.Mesh(geo, mat);
+                    loadedEntities[entName] = mesh;
+                    scene.add(mesh);
+                } 
+                else if (entConfig.type === "SPHERE") {
+                    const geo = new THREE.SphereGeometry(entConfig.radius, 32, 32);
+                    const mat = new THREE.MeshStandardMaterial({ color: 0x4444aa }); 
+                    const mesh = new THREE.Mesh(geo, mat);
+                    loadedEntities[entName] = mesh;
+                    scene.add(mesh);
+                } 
+                else if (entConfig.type === "MESH") {
+                    stlLoader.load(entConfig.file, (geo) => {
+                        const mat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
+                        const mesh = new THREE.Mesh(geo, mat);
+                        const scale = entConfig.scale || 1.0;
+                        mesh.scale.set(scale, scale, scale);
+                        loadedEntities[entName] = mesh;
+                        scene.add(mesh);
+                    });
+                }
+            }
+        }
+
+        // --- 5. THE RENDER LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const deltaTime = clock.getDelta(); 
+            
+            if (latestState && latestState.entities) {
+                
+                // --- 5A. PROCESS ENTITIES ---
+                for (const [entityName, entityData] of Object.entries(latestState.entities)) {
+                    const targetObj = loadedEntities[entityName];
+                    
+                    if (targetObj) {
+                        // Articulated VRM/MJCF Models
+                        if (entityData.type === "MJCF") {
+                            
+                            // 1. Root Position & Rotation
+                            if (entityData.root) {
+                                if (entityData.root.position) targetObj.scene.position.fromArray(entityData.root.position);
+                                if (entityData.root.rotation) targetObj.scene.quaternion.fromArray(entityData.root.rotation);
+                            }
+                            
+                            // 2. Bone Rotations
+                            if (entityData.bones) {
+                                for (const [boneName, quatArray] of Object.entries(entityData.bones)) {
+                                    const boneNode = targetObj.humanoid.getNormalizedBoneNode(boneName);
+                                    if (boneNode) boneNode.quaternion.fromArray(quatArray);
+                                }
+                            }
+
+                            // 3. Facial Expressions (Blendshapes)
+                            if (entityData.expressions && targetObj.expressionManager) {
+                                for (const [exprName, weight] of Object.entries(entityData.expressions)) {
+                                    targetObj.expressionManager.setValue(exprName, weight);
+                                }
+                            }
+
+                            // 4. Head/Eye LookAt Target
+                            if (entityData.lookAtTarget && targetObj.lookAt) {
+                                // Three-VRM LookAt requires a 3D Object target. 
+                                // We create a dummy invisible object once and move it around.
+                                if (!targetObj.lookAtDummy) {
+                                    targetObj.lookAtDummy = new THREE.Object3D();
+                                    scene.add(targetObj.lookAtDummy);
+                                    targetObj.lookAt.target = targetObj.lookAtDummy;
+                                }
+                                targetObj.lookAtDummy.position.fromArray(entityData.lookAtTarget);
+                            }
+
+                            targetObj.update(deltaTime);
+                        } 
+                        // Standard Primitives and STL Meshes
+                        else if (["BOX", "SPHERE", "CYLINDER", "MESH"].includes(entityData.type)) {
+                            if (entityData.root) {
+                                if (entityData.root.position) targetObj.position.fromArray(entityData.root.position);
+                                if (entityData.root.rotation) targetObj.quaternion.fromArray(entityData.root.rotation);
+                            }
+                        }
+                    }
+                }
+
+                // --- 5B. PROCESS GLOBAL SCENE EXTRAS ---
+                
+                // 1. Dynamic Camera
+                if (latestState.camera) {
+                    if (latestState.camera.position) camera.position.fromArray(latestState.camera.position);
+                    if (latestState.camera.lookAt) controls.target.fromArray(latestState.camera.lookAt);
+                }
+
+                // 2. Dynamic Lighting
+                if (latestState.lighting) {
+                    if (latestState.lighting.intensity !== undefined) dirLight.intensity = latestState.lighting.intensity;
+                    if (latestState.lighting.position) dirLight.position.fromArray(latestState.lighting.position);
+                }
+
+                // 3. Global Wind / Forces (Affects VRM SpringBones like Hair/Clothes)
+                if (latestState.windForce) {
+                    const windVec = new THREE.Vector3().fromArray(latestState.windForce);
+                    for (const obj of Object.values(loadedEntities)) {
+                        // Check if the object is a VRM with physics bones
+                        if (obj.springBoneManager) {
+                            for (const springBone of obj.springBoneManager.joints) {
+                                // Overwrite the default (0, -1, 0) downward gravity with the new force vector
+                                springBone.settings.gravityDir.copy(windVec).normalize();
+                                springBone.settings.gravityPower = windVec.length();
+                            }
+                        }
+                    }
+                }
+            }
+
+            controls.update(); 
+            renderer.render(scene, camera); 
+        }
+        
+        animate(); 
+    </script>
+</body>
+</html>

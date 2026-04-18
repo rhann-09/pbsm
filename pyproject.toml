@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pbsm"
+version = "0.1.0"
+authors = [
+    { name="Reuben Hann", email="reubenhann@gmail.com" },
+]
+description = "Physics-Based SMPL-X Modelling"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "genesis-world>=0.3.0",
+    "jinja2>=3.0.0",
+    "networkx>=3.0.0",
+    "numpy>=1.24.0",
+    "pygltflib>=1.15.0",
+    "scipy>=1.10.0",
+    "torch>=2.0.0",
+    "trimesh>=4.0.0",
+    "websockets>=10.4"
+]
