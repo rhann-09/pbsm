@@ -38,6 +38,7 @@ The next steps are to map SMPLX joints and motions to the .vrm models and then i
   * Global scene variables (e.g., Wind force vectors that actively blow VRM spring bones)
 
 ## Next Steps
+* Update class docstrings to include class attributes/methods documentation.
 * Create example(s) including global scene variables, facial expressions and look-at targets
 * Mapping `smplx.SMPLX` joint angles, root positions, and orientations natively to the Genesis VRM collision model.
 * Integration with motion diffusion models (e.g., NVIDIA's Kimodo-SMPLX-RP-v1) for generative motions.

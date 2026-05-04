@@ -3,7 +3,7 @@
 """
 Physics-Based SMPL-X Modelling (PBSM)
 
-Utility functions for the pbsm.genesis_vrm sub-package.
+VRM modelling within Genesis and Three.js.
 """
 
 # %% Imports
