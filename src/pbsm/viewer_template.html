@@ -4,8 +4,11 @@
     <meta charset="UTF-8">
     <title>PBSM Multi-Entity Viewer</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #222; }
+        body { margin: 0; overflow: hidden; background-color: #222; font-family: sans-serif; }
         canvas { display: block; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.8); z-index: 10; color: white; }
+        button { padding: 15px 30px; font-size: 18px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 5px; transition: 0.2s;}
+        button:hover { background: #45a049; }
     </style>
     
     <script type="importmap">
@@ -19,6 +22,11 @@
     </script>
 </head>
 <body>
+    <div id="overlay">
+        <h2>PBSM 3D Environment</h2>
+        <button id="startBtn">Connect Physics & Audio</button>
+    </div>
+
     <script type="module">
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -33,31 +41,247 @@
         const loadedEntities = {}; 
         const clock = new THREE.Clock(); 
 
-        // --- 2. WEBSOCKET CONNECTION ---
+        // --- AUDIO & BEHAVIOR VARIABLES ---
+        let listener;
+        let audioContext;
+        let audioAnalyser;
+        let frequencyDataArray;
+        let nextPlayTime = 0;
+
+        const VRM_VOWELS = ['aa', 'ee', 'ih', 'oh', 'ou'];
+        const EMOTIONS = ['joy', 'fun', 'surprised', 'neutral', 'neutral']; // Weighted toward neutral
+
+        /**
+         * Safely attaches a PositionalAudio object and initializes behavioral state tracking.
+         */
+        function initializeCharacter(vrm) {
+            if (listener && !vrm.voice) {
+                vrm.voice = new THREE.PositionalAudio(listener);
+                vrm.voice.setRefDistance(2);
+                const head = vrm.humanoid.getNormalizedBoneNode('head');
+                if (head) head.add(vrm.voice);
+                else vrm.scene.add(vrm.voice); 
+            }
+
+            // Initialize behavioral state with times offset randomly so multiple characters don't sync up
+            vrm.behaviorState = {
+                nextBlinkTime: clock.elapsedTime + Math.random() * 4 + 2,
+                isBlinking: false,
+                blinkStartTime: 0,
+                
+                currentMouthOpen: 0,
+
+                nextGlanceTime: clock.elapsedTime + Math.random() * 3 + 1,
+                targetLookAt: new THREE.Vector3(0, 1.5, 5),
+                currentLookAt: new THREE.Vector3(0, 1.5, 5),
+
+                nextEmotionTime: clock.elapsedTime + Math.random() * 5 + 3,
+                currentEmotion: 'neutral',
+                targetEmotion: 'neutral',
+                emotionWeight: 0
+            };
+
+            if (vrm.lookAt && !vrm.lookAtDummy) {
+                vrm.lookAtDummy = new THREE.Object3D();
+                scene.add(vrm.lookAtDummy);
+                vrm.lookAt.target = vrm.lookAtDummy;
+            }
+        }
+
+        /**
+         * Applies procedural micro-animations, yielding to Python if explicitly commanded.
+         */
+        function updateCharacterBehaviors(vrm, deltaTime, currentTime, pythonState) {
+            if (!vrm.expressionManager || !vrm.behaviorState) return;
+            const state = vrm.behaviorState;
+
+            // --- 1. LIP SYNC (Asymmetric Easing & Frequency Mapping) ---
+            const pythonMouthOverride = pythonState && pythonState.expressions && 
+                                        VRM_VOWELS.some(v => pythonState.expressions[v] !== undefined);
+            
+            if (audioAnalyser && frequencyDataArray && !pythonMouthOverride) {
+                audioAnalyser.getByteFrequencyData(frequencyDataArray);
+                
+                // Split frequencies: Bass (Vowels like 'oh') vs Treble (Consonants like 'ee')
+                let bassSum = 0, trebleSum = 0;
+                const halfLength = Math.floor(frequencyDataArray.length / 2);
+                
+                for (let i = 0; i < halfLength; i++) bassSum += frequencyDataArray[i];
+                for (let i = halfLength; i < frequencyDataArray.length; i++) trebleSum += frequencyDataArray[i];
+                
+                let bassAvg = bassSum / halfLength;
+                let trebleAvg = trebleSum / halfLength;
+                let totalVolume = Math.max(bassAvg, trebleAvg);
+                
+                // Noise gate: Ignore background static below a threshold (15)
+                let targetMouthOpen = totalVolume > 15 ? Math.min(1.0, totalVolume / 60.0) : 0;
+                
+                // Asymmetric Easing: Open fast, close smooth
+                if (targetMouthOpen > state.currentMouthOpen) {
+                    state.currentMouthOpen = THREE.MathUtils.lerp(state.currentMouthOpen, targetMouthOpen, 0.8); // Snap open
+                } else {
+                    state.currentMouthOpen = THREE.MathUtils.lerp(state.currentMouthOpen, targetMouthOpen, 0.3); // Smooth close
+                }
+
+                // Clear all vowels first to prevent blending overlaps
+                VRM_VOWELS.forEach(v => vrm.expressionManager.setValue(v, 0));
+
+                if (state.currentMouthOpen > 0.05) {
+                    // Map shape based on frequency dominance
+                    if (bassAvg > trebleAvg * 1.5) {
+                        vrm.expressionManager.setValue('oh', state.currentMouthOpen); // Deep sounds
+                    } else if (trebleAvg > bassAvg * 1.2) {
+                        vrm.expressionManager.setValue('ee', state.currentMouthOpen * 0.8); // High sounds/sibilance
+                    } else {
+                        vrm.expressionManager.setValue('aa', state.currentMouthOpen); // Standard mid-range
+                    }
+                }
+            }
+
+            // --- 2. PROCEDURAL EXPRESSIONS (Subtle Emotions) ---
+            const pythonEmotionOverride = pythonState && pythonState.expressions && 
+                                          EMOTIONS.some(e => pythonState.expressions[e] !== undefined);
+
+            if (!pythonEmotionOverride) {
+                // Pick a new emotion every few seconds
+                if (currentTime > state.nextEmotionTime) {
+                    state.targetEmotion = EMOTIONS[Math.floor(Math.random() * EMOTIONS.length)];
+                    state.nextEmotionTime = currentTime + Math.random() * 6 + 4; // 4 to 10 seconds
+                }
+
+                // Crossfade logic
+                if (state.currentEmotion !== state.targetEmotion) {
+                    // Fade out current emotion
+                    state.emotionWeight -= deltaTime * 1.5;
+                    if (state.emotionWeight <= 0) {
+                        state.emotionWeight = 0;
+                        vrm.expressionManager.setValue(state.currentEmotion, 0);
+                        state.currentEmotion = state.targetEmotion; // Switch to new emotion
+                    } else {
+                        vrm.expressionManager.setValue(state.currentEmotion, state.emotionWeight * 0.5); // Keep it subtle (max 50%)
+                    }
+                } else if (state.currentEmotion !== 'neutral') {
+                    // Fade in new emotion
+                    state.emotionWeight += deltaTime * 1.5;
+                    if (state.emotionWeight > 1) state.emotionWeight = 1;
+                    vrm.expressionManager.setValue(state.currentEmotion, state.emotionWeight * 0.4); // Subtle eyebrow/smile movement
+                }
+            }
+
+            // --- 3. PROCEDURAL BLINKING ---
+            const pythonBlinkOverride = pythonState && pythonState.expressions && pythonState.expressions['blink'] !== undefined;
+            
+            if (!pythonBlinkOverride) {
+                if (currentTime > state.nextBlinkTime && !state.isBlinking) {
+                    state.isBlinking = true;
+                    state.blinkStartTime = currentTime;
+                }
+
+                if (state.isBlinking) {
+                    let blinkProgress = (currentTime - state.blinkStartTime) / 0.15; 
+                    if (blinkProgress > 1.0) {
+                        state.isBlinking = false;
+                        state.nextBlinkTime = currentTime + Math.random() * 4 + 2;
+                        vrm.expressionManager.setValue('blink', 0);
+                    } else {
+                        vrm.expressionManager.setValue('blink', Math.sin(blinkProgress * Math.PI));
+                    }
+                }
+            }
+
+            // --- 4. PROCEDURAL GLANCING ---
+            if (vrm.lookAtDummy) {
+                if (pythonState && pythonState.lookAtTarget) {
+                    // Match Python's target so we don't snap back wildly when Python releases control
+                    state.currentLookAt.fromArray(pythonState.lookAtTarget); 
+                    state.targetLookAt.copy(state.currentLookAt);
+                } else {
+                    if (currentTime > state.nextGlanceTime) {
+                        state.targetLookAt.set((Math.random() - 0.5) * 4, 1.0 + Math.random() * 1.5, 5);
+                        state.nextGlanceTime = currentTime + Math.random() * 3 + 1;
+                    }
+                    state.currentLookAt.lerp(state.targetLookAt, deltaTime * 3.0);
+                    vrm.lookAtDummy.position.copy(state.currentLookAt);
+                }
+            }
+        }
+
+        // --- 2. WEBSOCKET CONNECTIONS ---
+        
         const wsPort = SCENE_CONFIG.ws_port || 8765; 
-        const ws = new WebSocket(`ws://localhost:${wsPort}`);
+        const physicsWs = new WebSocket(`ws://localhost:${wsPort}`);
         
-        ws.onopen = () => console.log("🟢 WebSocket connected to Python Backend!");
-        ws.onerror = (error) => console.error("🔴 WebSocket Error:", error);
-        
-        ws.onmessage = (event) => {
-            latestState = JSON.parse(event.data);
-        };
+        physicsWs.onopen = () => console.log("Physics WebSocket connected!");
+        physicsWs.onmessage = (event) => { latestState = JSON.parse(event.data); };
+
+        document.getElementById('startBtn').addEventListener('click', () => {
+            document.getElementById('overlay').style.display = 'none';
+            
+            listener = new THREE.AudioListener();
+            camera.add(listener);
+            
+            audioContext = listener.context;
+            if (audioContext.state === 'suspended') audioContext.resume();
+
+            audioAnalyser = audioContext.createAnalyser();
+            audioAnalyser.fftSize = 256; 
+            frequencyDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+
+            Object.values(loadedEntities).forEach(ent => {
+                if (ent.humanoid) initializeCharacter(ent);
+            });
+
+            // Fetch dynamic audio port generated by Python
+            fetch('audio_config.json')
+                .then(response => response.json())
+                .then(data => {
+                    const audioPort = data.port;
+                    const audioWs = new WebSocket(`ws://127.0.0.1:${audioPort}`);
+                    audioWs.binaryType = 'arraybuffer';
+                    
+                    audioWs.onopen = () => console.log(`Audio WebSocket connected on port ${audioPort}`);
+                    audioWs.onmessage = async (event) => {
+                        try {
+                            const audioBuffer = await audioContext.decodeAudioData(event.data);
+                            const source = audioContext.createBufferSource();
+                            source.buffer = audioBuffer;
+
+                            // Connect through analyzer for procedural lip-sync
+                            source.connect(audioAnalyser);
+
+                            const targetVrm = loadedEntities["vrm_model"];
+                            if (targetVrm && targetVrm.voice) {
+                                source.connect(targetVrm.voice.getOutput());
+                            } else {
+                                source.connect(audioContext.destination); 
+                            }
+
+                            const currentTime = audioContext.currentTime;
+                            if (nextPlayTime < currentTime) nextPlayTime = currentTime;
+
+                            source.start(nextPlayTime);
+                            nextPlayTime += audioBuffer.duration;
+                        } catch (error) { 
+                            console.error("Error decoding audio buffer:", error); 
+                        }
+                    };
+                })
+                .catch(err => console.error("Failed to load audio_config.json:", err));
+        });
 
         // --- 3. BASIC THREE.JS SETUP ---
         const scene = new THREE.Scene();
-        
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-        camera.position.set(0, 3, 6);
+        camera.position.set(0, 1.5, 3);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
         const controls = new OrbitControls(camera, renderer.domElement);
-        controls.target.set(0, 1.0, 0);
+        controls.target.set(0, 1.4, 0);
 
-        scene.add(new THREE.AmbientLight(0xffffff, 0.1)); // Increased slightly so expressions are visible
+        scene.add(new THREE.AmbientLight(0xffffff, 0.2)); 
         const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
         dirLight.position.set(2, 5, 2).normalize();
         scene.add(dirLight);
@@ -72,12 +296,12 @@
 
         if (SCENE_CONFIG.entities) {
             for (const [entName, entConfig] of Object.entries(SCENE_CONFIG.entities)) {
-                
                 if (entConfig.type === "VRM") {
                     vrmLoader.load(entConfig.file, (gltf) => {
                         const vrm = gltf.userData.vrm;
                         loadedEntities[entName] = vrm;
                         scene.add(vrm.scene); 
+                        initializeCharacter(vrm);
                     });
                 } 
                 else if (entConfig.type === "BOX") {
@@ -89,7 +313,7 @@
                 } 
                 else if (entConfig.type === "CYLINDER") {
                     const geo = new THREE.CylinderGeometry(entConfig.radius, entConfig.radius, entConfig.height, 32);
-                    geo.rotateX(Math.PI / 2); // Align to Z-up
+                    geo.rotateX(Math.PI / 2);
                     const mat = new THREE.MeshStandardMaterial({ color: 0xaa4444 }); 
                     const mesh = new THREE.Mesh(geo, mat);
                     loadedEntities[entName] = mesh;
@@ -119,53 +343,39 @@
         function animate() {
             requestAnimationFrame(animate);
             const deltaTime = clock.getDelta(); 
+            const currentTime = clock.elapsedTime;
             
             if (latestState && latestState.entities) {
-                
-                // --- 5A. PROCESS ENTITIES ---
                 for (const [entityName, entityData] of Object.entries(latestState.entities)) {
                     const targetObj = loadedEntities[entityName];
                     
                     if (targetObj) {
-                        // Articulated VRM/MJCF Models
                         if (entityData.type === "MJCF") {
                             
-                            // 1. Root Position & Rotation
                             if (entityData.root) {
                                 if (entityData.root.position) targetObj.scene.position.fromArray(entityData.root.position);
                                 if (entityData.root.rotation) targetObj.scene.quaternion.fromArray(entityData.root.rotation);
                             }
                             
-                            // 2. Bone Rotations
                             if (entityData.bones) {
                                 for (const [boneName, quatArray] of Object.entries(entityData.bones)) {
                                     const boneNode = targetObj.humanoid.getNormalizedBoneNode(boneName);
                                     if (boneNode) boneNode.quaternion.fromArray(quatArray);
                                 }
                             }
-
-                            // 3. Facial Expressions (Blendshapes)
+                            
+                            // 1. Process Genesis-controlled expressions (if any exist)
                             if (entityData.expressions && targetObj.expressionManager) {
                                 for (const [exprName, weight] of Object.entries(entityData.expressions)) {
                                     targetObj.expressionManager.setValue(exprName, weight);
                                 }
                             }
 
-                            // 4. Head/Eye LookAt Target
-                            if (entityData.lookAtTarget && targetObj.lookAt) {
-                                // Three-VRM LookAt requires a 3D Object target. 
-                                // We create a dummy invisible object once and move it around.
-                                if (!targetObj.lookAtDummy) {
-                                    targetObj.lookAtDummy = new THREE.Object3D();
-                                    scene.add(targetObj.lookAtDummy);
-                                    targetObj.lookAt.target = targetObj.lookAtDummy;
-                                }
-                                targetObj.lookAtDummy.position.fromArray(entityData.lookAtTarget);
-                            }
+                            // 2. Process procedural behaviors, passing entityData for the priority handshake
+                            updateCharacterBehaviors(targetObj, deltaTime, currentTime, entityData);
 
                             targetObj.update(deltaTime);
                         } 
-                        // Standard Primitives and STL Meshes
                         else if (["BOX", "SPHERE", "CYLINDER", "MESH"].includes(entityData.type)) {
                             if (entityData.root) {
                                 if (entityData.root.position) targetObj.position.fromArray(entityData.root.position);
@@ -174,34 +384,15 @@
                         }
                     }
                 }
-
-                // --- 5B. PROCESS GLOBAL SCENE EXTRAS ---
                 
-                // 1. Dynamic Camera
                 if (latestState.camera) {
                     if (latestState.camera.position) camera.position.fromArray(latestState.camera.position);
                     if (latestState.camera.lookAt) controls.target.fromArray(latestState.camera.lookAt);
                 }
 
-                // 2. Dynamic Lighting
                 if (latestState.lighting) {
                     if (latestState.lighting.intensity !== undefined) dirLight.intensity = latestState.lighting.intensity;
                     if (latestState.lighting.position) dirLight.position.fromArray(latestState.lighting.position);
-                }
-
-                // 3. Global Wind / Forces (Affects VRM SpringBones like Hair/Clothes)
-                if (latestState.windForce) {
-                    const windVec = new THREE.Vector3().fromArray(latestState.windForce);
-                    for (const obj of Object.values(loadedEntities)) {
-                        // Check if the object is a VRM with physics bones
-                        if (obj.springBoneManager) {
-                            for (const springBone of obj.springBoneManager.joints) {
-                                // Overwrite the default (0, -1, 0) downward gravity with the new force vector
-                                springBone.settings.gravityDir.copy(windVec).normalize();
-                                springBone.settings.gravityPower = windVec.length();
-                            }
-                        }
-                    }
                 }
             }
 
@@ -210,6 +401,12 @@
         }
         
         animate(); 
+        
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
     </script>
 </body>
 </html>
